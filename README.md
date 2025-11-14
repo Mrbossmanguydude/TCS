@@ -1,23 +1,60 @@
-# TCS
-Computer Science NEA project. A proof-of-concept simulation testing whether a single centralised neural network can coordinate autonomous vehicles more efficiently than decentralised control. Uses curriculum-based reinforcement learning with PPO to minimise congestion, collisions, and journey times across procedurally generated road networks. 
+# **TCS – Computer Science NEA Project**
 
-The goal is to make multiple agents, capable of percieving a state within the procedurally generated road network, work out a way to optimise their pathfinding and speed such that they minimise the factors above, as well as getting as close to the often unachievable optimum of simple individualistic pathfinding.
+A proof-of-concept simulation testing whether a **single centralised neural network** can coordinate autonomous vehicles more efficiently than decentralised control.  
+Uses **curriculum-based reinforcement learning (PPO)** to minimise **congestion, collisions, and journey times** across **procedurally generated road networks**.
 
-In this case, simple individualistic pathfinding is an even more abstract version of the intial simulation, such that each agent uses an optimal pathfinding algorithm, at max speed, while ignoring other agents in case of collisions. This is the theoretical limit to how good the reward can be, and is shown as a metric to the user to evaluate.
+---
 
-For now, the network functions like a typical PPO, the process usually goes:
-  - Generate state, destinations and pre-training compute (if not already available).
-  - Observe the current state, and use it as an input for the features (information is conveyed via a feature vector per vehicle (agent), containing features such as location, relative location to other agents, distance to goal, collision amt, current speed, proximity to road, current turning angle (or discrete direction in initial phases) and more to be added as the agent is trained, dependent on what information will best inform the agents about the environment to help it reach its goals).
-  - The PN (Policy Network) computes an action for each vehicle as an output of a vector of the same size as the input vector (so per vehicle), to output changes in speed and turning (+ perhaps more in the future).
-  - Based on f(s_t, a_t, s_t+1) (the reward function), the value of the reward is determined, dependent on the current state, the next state (after implemented trajectories) and the action for the vehicle to get there.
-  - The trajectory (a_t, s_t, r_t, s_t+1) is logged, and stored as part of the data (for purposes of efficiency, it is likely that only a_t and r_t will be stored, as well as the initial state, from which we can derive the next states, this reduces the amount of space needed).
-  - The return is calculated dependent on a preset (by user) hyperparam gamma, and the VN (Value Network) calculates the predicted return. (So loss simply becomes expectation at t, of MSE of the VN)
-  - After this, the advantage is calculated via return - VN_pred.
-  - The clipped surrogate objective finds the expectation of the minimum of the unclipped and clipped objective (dependent on epsilon, advanatge and the ratio of the old policy to the new policy)
-  - Therfore we are able to compute combined and individual losses based on c1 and c2 (weighting coefficients dependent on stage of curriculum) as well as an entropy bonus to encourage exploration.
-  - Backpropogation then occurs using these losses, after which the episode steps another unit in time.
-  - This process is repeated for hundreds of episodes, until the first phase of training is complete (has met a good standard of loss, and improvement is noticed within the evaluation).
-  - Phases continue in this way until the final one is complete, the network undergoes a final evaluation and it is decided whether it is good enough or not.
+The goal is to make multiple agents—each capable of perceiving a state within the procedurally generated road network—work out a way to optimise their pathfinding and speed such that they minimise the factors above, while still getting as close as possible to the often unachievable optimum of simple individualistic pathfinding.
 
-As my peripherals may not possess the computational power to find a good minimum of loss for both the VN and PN, a result that leads to a failure in understanding of the environment by the agent (it does not converge to a "good" solution) within the given time, we cannot definitively say whether or not that training (in this way) can actually succeed or not to make a system that is capable of having "intelligent" agents that can navigate the state space with an optimal policy. 
-Hence, given the broader aim of this project, which is to assess whether a system like this of self-driving vehicles that confer with a centralised controller in order to move around better than humans, the result of the project will more than likely be an indication of how far this paticular architecture can take the avenue, and if more improvements are needed or not or if another type of solution would be either simpler, cheaper, more optimal or a combination of these elements.
+In this case, **simple individualistic pathfinding** is an even more abstract version of the initial simulation: each agent uses an optimal pathfinding algorithm at maximum speed, ignoring other agents and possible collisions. This provides the **theoretical upper bound** of how good the reward can be, and is shown as a metric to the user for evaluation purposes.
+
+---
+
+## **Training Approach (High-Level)**
+
+For now, the network functions like a typical PPO system. The process roughly goes:
+
+1. **Generate state, destinations, and pre-training compute** (if not already available).
+2. **Observe the current state**, and convert it into a **feature vector per vehicle**.  
+   These features include:
+   - location  
+   - relative location to other agents  
+   - distance to goal  
+   - collision amount  
+   - current speed  
+   - proximity to road  
+   - current turning angle (or discrete direction initially)  
+   - and more features added gradually depending on training phase
+3. The **Policy Network (PN)** computes an action for each vehicle from the features, outputting changes in speed and turning (with more actions added as training progresses).
+4. Based on the reward function **f(sₜ, aₜ, sₜ₊₁)**, the reward is determined from the current state, next state, and chosen action.
+5. The trajectory **(aₜ, sₜ, rₜ, sₜ₊₁)** is logged.  
+   To save memory, only **aₜ and rₜ** and the initial state may be stored, since sₜ₊₁ can be reconstructed.
+6. The **return** is calculated using the user-defined γ (gamma).
+7. The **Value Network (VN)** predicts the return, giving an MSE-based value loss.
+8. **Advantage** is computed as:  
+   `advantage = return − VN_pred`.
+9. The **clipped surrogate objective** then computes the expectation of the minimum between the clipped and unclipped terms (dependent on ε, advantage, and the ratio of old to new policies).
+10. Combined losses are calculated using coefficients **c₁** and **c₂**, plus **entropy bonus** to encourage exploration.
+11. **Backpropagation** updates the networks.
+12. The episode steps forward one unit in time.
+13. This repeats for hundreds of episodes until the first curriculum phase meets an acceptable standard.
+14. Training continues through the phases until the final one is complete.
+15. A **final evaluation** determines whether the result is strong enough.
+
+---
+
+## **Project Limitations & Purpose**
+
+Because the available hardware may not have the computational strength required to reliably find a good minimum for both VN and PN losses, the agent may not fully converge. If the agent fails to understand the environment (i.e., does not converge to a “good” solution), we cannot definitively conclude whether this architecture can achieve intelligent behaviour under ideal training conditions.
+
+The broader aim of this project is therefore to assess **whether a system like this—autonomous vehicles coordinated by a central controller—can outperform human-like or decentralised approaches**, and whether **this particular architecture** is:
+
+- viable,
+- efficient,
+- scalable,
+- or requiring improvement or replacement.
+
+Ultimately, the result will show **how far PPO-based centralised control can go** within the constraints of this project, and where future investigation is needed.
+
+---
