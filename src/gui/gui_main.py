@@ -11,6 +11,11 @@ FONT = "fonts\\pixel_font-1.ttf"
 
 # COLOURS
 GRAY = (61, 68, 72)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+GREEN = (0, 255, 0)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
 
 # CLASSES
 class Button:
@@ -41,15 +46,30 @@ class Button:
         draw_highlighted_rect(screen, self.rect, self.bordercolor, self.bordercolor, self.thickness, self.thickness)
         draw_text(screen, FONT, self.text, (self.rect.x + 15, self.rect.y), self.text_size, self.textcolor)
 
-def draw_highlighted_rect(surface : pygame.surface.Surface, rect : pygame.rect.Rect, border_color : tuple, highlight_color : tuple, border_thickness : int, highlight_thickness : int):
-    pygame.draw.rect(surface, border_color, rect, border_thickness)
-    inner_rect = pygame.Rect(rect.left + border_thickness, rect.top + border_thickness,rect.width - 2 * border_thickness, rect.height - 2 * border_thickness)
-    pygame.draw.rect(surface, highlight_color, inner_rect, highlight_thickness)
-
-def draw_text(surface : pygame.surface.Surface, font : pygame.font.Font, text : str, pos : tuple, fontsize : int, color : tuple):
-    font = pygame.font.Font(font, fontsize) # Font is reassigned as a pygame.Font obj to be blit.
-    word = font.render(text, True, color)
-    surface.blit(word, (pos[0], pos[1])) #word blit at right position in given font.
+class popup:
+    def __init__(self, x: int, y: int, width: int, height: int, text_size: int, argtype: str, errortext: str, 
+                 fixtext="", bordercolor=BLACK, textcolor=BLACK, thickness=5):
+        '''
+        Purpose:
+        A dynamic popup that is an integral GUI element to display errors, options and potential fixes for easy UI access.
+        
+        Attributes:
+        argtype: Can be 1 of 3 choices as a string, "error", "info" and "input_val", no need for validation of this
+                 as it is hardcoded based on the error, just to see if it works in a given scenario.
+        
+        Methods:
+        '''
+        self.rect = pygame.Rect(x, y, width, height)
+        self.rect.topleft = (x, y)
+        self.text_size = text_size
+        self.textcolor = textcolor
+        self.bordercolor = bordercolor
+        self.thickness = thickness
+    
+    def draw(self, screen):
+        #Draws out the popup and its border.
+        draw_highlighted_rect(screen, self.rect, self.bordercolor, self.bordercolor, self.thickness, self.thickness)
+        draw_text(screen, FONT, self.text, (self.rect.x + 15, self.rect.y), self.text_size, self.textcolor)
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SUBROUTINES
@@ -60,6 +80,16 @@ def draw(screen, buttons, state):
     # BUTTON HANDLING
     for button in buttons[state]:
         button.draw(screen)
+
+def draw_highlighted_rect(surface : pygame.surface.Surface, rect : pygame.rect.Rect, border_color : tuple, highlight_color : tuple, border_thickness : int, highlight_thickness : int):
+    pygame.draw.rect(surface, border_color, rect, border_thickness)
+    inner_rect = pygame.Rect(rect.left + border_thickness, rect.top + border_thickness,rect.width - 2 * border_thickness, rect.height - 2 * border_thickness)
+    pygame.draw.rect(surface, highlight_color, inner_rect, highlight_thickness)
+
+def draw_text(surface : pygame.surface.Surface, font : pygame.font.Font, text : str, pos : tuple, fontsize : int, color : tuple):
+    font = pygame.font.Font(font, fontsize) # Font is reassigned as a pygame.Font obj to be blit.
+    word = font.render(text, True, color)
+    surface.blit(word, (pos[0], pos[1])) #word blit at right position in given font.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # HELPER OBJS + VARIABLES
