@@ -11,7 +11,7 @@ In this case, **simple individualistic pathfinding** is an even more abstract ve
 
 ---
 
-## **Training Approach (High-Level)**
+## **Training Approach**
 
 For now, the network functions like a typical PPO system. The process roughly goes:
 

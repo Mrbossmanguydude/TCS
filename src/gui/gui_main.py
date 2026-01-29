@@ -10,11 +10,10 @@ Once finished, it should align with mockups made as well as interviews with the 
 from pathlib import Path
 import pygame
 
-
 # CONSTANTS -------------------------------------------------------------------
 FPS = 60  # Stable frame pacing for smooth input/animation, 60 FPS is typical for most Pygame code.
 SCREEN_SIZE = (1200, 700)  # Fixed canvas so layout stays predictable, given in (x, y) form.
-BG = (26, 26, 26)  # Dark background for contrast.
+BG = (34, 2, 1)  # Dark background for contrast.
 FG = (235, 235, 235)  # Primary text/line color for readability.
 ACCENT = (180, 180, 180)  # Secondary text for hints/placeholders.
 
@@ -24,7 +23,7 @@ ACCENT = (180, 180, 180)  # Secondary text for hints/placeholders.
 ###############################################################################
 
 
-def _vertical_gradient(size: tuple, top_color: tuple, bottom_color: tuple) -> pygame.surface:
+def _vertical_gradient(size: tuple, top_color: tuple, bottom_color: tuple) -> pygame.Surface:
     """A simple vertical gradient surface for depth without external assets; for
        even easier implementation. This is a helper procedure.
     """
@@ -96,10 +95,6 @@ class Button:
         pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
         gradient.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(gradient, self.rect.topleft)
-
-        highlight = pygame.Surface((self.rect.width, self.rect.height // 2), pygame.SRCALPHA)
-        highlight.fill((255, 255, 255, 40))
-        screen.blit(highlight, self.rect.topleft)
 
         pygame.draw.rect(screen, self.bordercolor, self.rect, self.thickness, border_radius=radius) # Draws the Button's Rect.
 
@@ -176,7 +171,7 @@ class MainMenu:
         frame_rect = pygame.Rect(margin, margin, self.screen_rect.width - 2 * margin, self.screen_rect.height - 2 * margin)
         pygame.draw.rect(screen, self.line_color, frame_rect, 2)
         header_color = FG
-        draw_text(screen, self.font_path, self.header_text, (self.header_rect.x + 30, self.header_rect.y + 20), 34, header_color)
+        draw_text(screen, self.font_path, self.header_text, (self.header_rect.x + 55, self.header_rect.y + 20), 68, header_color)
         pygame.draw.line(
             screen,
             header_color,
@@ -205,7 +200,7 @@ def run_gui():
     clock = pygame.time.Clock() # Frame pacing/ticks.
 
     menu = MainMenu(screen.get_rect(), font_path=font_path)  # Centralized menu layout/interaction.
-    state = "MENU" # String-based states makes it easy to fetch the state, but may change in the future.
+    state = "MENU" # String based states makes it easy to fetch the state, but may change in the future.
     placeholder_title = "" # Carries the last selected state for placeholder labels.
     back_button = Button(40, 30, 70, 35, "BACK", 18, thickness=2, font_path=font_path)
 
@@ -262,3 +257,22 @@ def run_gui():
 
 if __name__ == "__main__":
     run_gui()
+
+'''
+Probable sequence of window implementation:
+1) Main Menu
+2) Controls (Changed with each new window)
+3) PopUp
+4) Scenario Setup
+5) Gen Preview + Map display
+6) Train setup
+7) Training
+8) Baseline Demo
+9) Evaluate
+10) Evaluating
+11) Usage Settings (General)
+12) Usage Settings (Advanced)
+13) Replay Browser
+
+Backend to be implemented first, with this skeleton in mind.
+'''
