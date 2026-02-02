@@ -8,7 +8,15 @@ Once finished, it should align with mockups made as well as interviews with the 
 """
 
 from pathlib import Path
+import sys
+
+# Ensure project root is on sys.path when running as a script (e.g., python src/gui/gui_main.py).
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pygame
+from src.utils.run_init import RunContext, init_run
 
 # CONSTANTS -------------------------------------------------------------------
 FPS = 60  # Stable frame pacing for smooth input/animation, 60 FPS is typical for most Pygame code.
@@ -188,6 +196,10 @@ def run_gui():
     """
     Main loop with interchangable states.
     """
+    # Initialise run context before GUI starts.
+    run_ctx: RunContext = init_run()
+    print(f"[TCS] Run initialised: run_id={run_ctx.run_id} seed={run_ctx.seed} db={run_ctx.db_path}")
+
     pygame.init()
 
     base_dir = Path(__file__).resolve().parents[2] # .../TCS
