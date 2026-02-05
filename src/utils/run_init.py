@@ -1,15 +1,25 @@
+"""
+Run initialisation and persistence scaffolding.
+
+Design intent:
+- DB stores audit-worthy TRAIN runs (and explicit saves), linking seed/config to metrics.
+- Configs are less critical; keep them in memory, and only persist when a TRAIN run is recorded.
+"""
+
 import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import random
 
 
 # Directories under project root used for outputs/replays/metrics.
 DATA_DIRS = [
     "data/logs",
+    "data/logs/configs",       # optional rolling configs
+    "data/logs/saved_configs", # configs persisted alongside TRAIN runs
     "data/maps",
     "data/metrics",
     "data/models",
@@ -25,8 +35,9 @@ class RunContext:
     db_path: Path
     seed: int
     config: Dict[str, Any]
-    run_id: int
+    run_id: Optional[int]
     created_at: datetime
+    config_snapshot_path: Optional[Path]
 
 
 def _project_root() -> Path:
@@ -72,6 +83,28 @@ def load_config(config_path: Optional[Path] = None, seed: int = 0) -> Dict[str, 
     return cfg
 
 
+def reseed_all(seed: int) -> None:
+    """
+    Apply seed to Python random, NumPy, and PyTorch (if available).
+    For reproducibility.
+    """
+    random.seed(seed)
+    try:
+        import numpy as np  # type: ignore
+
+        np.random.seed(seed)
+    except Exception:
+        pass
+    try:
+        import torch  # type: ignore
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except Exception:
+        pass
+
+
 def open_db(db_path: Path) -> sqlite3.Connection:
     """Open (or create) the SQLite database at db_path and ensure schema exists."""
     conn = sqlite3.connect(db_path)
@@ -86,12 +119,40 @@ def open_db(db_path: Path) -> sqlite3.Connection:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS episodes (
+            episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id     INTEGER NOT NULL,
+            mode       TEXT    NOT NULL,
+            seed       INTEGER NOT NULL,
+            created_at TEXT    NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(run_id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metrics (
+            metric_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id     INTEGER NOT NULL,
+            episode_id INTEGER,
+            key        TEXT    NOT NULL,
+            value      REAL    NOT NULL,
+            step       INTEGER,
+            created_at TEXT    NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(run_id),
+            FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+        );
+        """
+    )
     conn.commit()
     return conn
 
 
-def create_run(conn: sqlite3.Connection, seed: int, config: Dict[str, Any], mode: str = "BOOT") -> int:
-    """Insert a run row capturing seed + config snapshot; return new run_id."""
+def create_run_record(db_path: Path, seed: int, config: Dict[str, Any], mode: str) -> Tuple[int, str]:
+    """Insert a run row (TRAIN or explicit save) and return run_id plus ISO timestamp."""
+    conn = sqlite3.connect(db_path)
     created_at = datetime.now(timezone.utc).isoformat()
     config_json = json.dumps(config, sort_keys=True)
     cur = conn.execute(
@@ -99,22 +160,33 @@ def create_run(conn: sqlite3.Connection, seed: int, config: Dict[str, Any], mode
         (created_at, mode, seed, config_json),
     )
     conn.commit()
-    return cur.lastrowid
+    run_id = cur.lastrowid
+    conn.close()
+    return run_id, created_at
+
+
+def save_persisted_config(base_dir: Path, run_id: int, config: Dict[str, Any]) -> Path:
+    """Persist a versioned config tied to a TRAIN run."""
+    path = base_dir / "data" / "logs" / "saved_configs" / f"run_{run_id}_config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    return path
 
 
 def init_run(user_seed: Optional[int] = None, config_path: Optional[Path] = None) -> RunContext:
     """
       - Ensures data directories exist,
-      - Resolves seed + config snapshot,
-      - Opens/creates the SQLite DB,
-      - Inserts an initial run row.
+      - Resolves seed,
+      - Opens/creates the SQLite DB schema (no run row yet),
+      - Returns context; TRAIN run rows are created when training starts.
     """
     base_dir = ensure_data_dirs()
     seed = resolve_seed(user_seed)
     cfg = load_config(config_path, seed=seed)
+    reseed_all(seed)
     db_path = base_dir / "data" / "metrics" / "tcs.db"
-    conn = open_db(db_path)
-    run_id = create_run(conn, seed, cfg, mode="BOOT")
+    open_db(db_path).close()
+    cfg_snapshot = None  # only persist when a TRAIN run is recorded
     created_at = datetime.now(timezone.utc)
     return RunContext(
         base_dir=base_dir,
@@ -122,6 +194,25 @@ def init_run(user_seed: Optional[int] = None, config_path: Optional[Path] = None
         db_path=db_path,
         seed=seed,
         config=cfg,
-        run_id=run_id,
+        run_id=None,
         created_at=created_at,
+        config_snapshot_path=cfg_snapshot,
+    )
+
+
+def start_train_run(ctx: RunContext) -> RunContext:
+    """
+    Create a DB run row for TRAIN and persist a saved config alongside it.
+    """
+    run_id, created_iso = create_run_record(ctx.db_path, ctx.seed, ctx.config, mode="TRAIN")
+    saved_cfg = save_persisted_config(ctx.base_dir, run_id, ctx.config)
+    return RunContext(
+        base_dir=ctx.base_dir,
+        data_dir=ctx.data_dir,
+        db_path=ctx.db_path,
+        seed=ctx.seed,
+        config=ctx.config,
+        run_id=run_id,
+        created_at=datetime.fromisoformat(created_iso),
+        config_snapshot_path=saved_cfg,
     )

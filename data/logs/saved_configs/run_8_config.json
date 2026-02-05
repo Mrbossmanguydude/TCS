@@ -1,0 +1,18 @@
+{
+  "options": {
+    "device": "auto",
+    "fps_cap": 60,
+    "overlays": true
+  },
+  "scenario": {
+    "episode_len": 300,
+    "map_size": "default",
+    "vehicles": 10
+  },
+  "seed": 1394084605,
+  "train": {
+    "batch_size": 2048,
+    "clip_eps": 0.2,
+    "gamma": 0.99
+  }
+}

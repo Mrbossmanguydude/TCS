@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pygame
-from src.utils.run_init import RunContext, init_run
+from src.utils.run_init import RunContext, init_run, start_train_run
 
 # CONSTANTS -------------------------------------------------------------------
 FPS = 60  # Stable frame pacing for smooth input/animation, 60 FPS is typical for most Pygame code.
@@ -24,6 +24,21 @@ SCREEN_SIZE = (1200, 700)  # Fixed canvas so layout stays predictable, given in 
 BG = (34, 2, 1)  # Dark background for contrast.
 FG = (235, 235, 235)  # Primary text/line color for readability.
 ACCENT = (180, 180, 180)  # Secondary text for hints/placeholders.
+
+UI_OFFSETS = {
+    "menu": {
+        "train": (0, 0),
+        "evaluate": (0, 0),
+        "demo": (0, 0),
+        "replays": (0, 0),
+        "setup": (0, 0),
+        "options": (0, 0),
+        "controls": (0, 0),
+        "exit": (0, 0),
+        "header": (0, 0),
+    },
+}
+HILITE = (255, 215, 0)  # Highlight
 
 
 ###############################################################################
@@ -66,8 +81,8 @@ class Button:
         height,
         text,
         text_size,
-        bordercolor=(220, 220, 220),
-        textcolor=(255, 255, 255),
+        bordercolor=HILITE,
+        textcolor=FG,
         thickness=2,
         font_path=None,
     ):
@@ -126,6 +141,7 @@ class MainMenu:
         self.header_rect, self.buttons = self._build_buttons()
 
     def _build_buttons(self):
+        offsets = UI_OFFSETS.get("menu", {})
         center_x = self.screen_rect.centerx
         center_y = self.screen_rect.centery
         btn_w, btn_h = 220, 80  # Button sizing for prominence.
@@ -133,10 +149,17 @@ class MainMenu:
         top_y = center_y - (btn_h * 3) # Reserve room for header/grid.
 
         header_w, header_h = 260, 90 # Larger header area for hierarchy.
-        header_rect = pygame.Rect(center_x - header_w // 2, top_y - header_h, header_w, header_h)
+        hx_off, hy_off = offsets.get("header", (0, 0))
+        header_rect = pygame.Rect(
+            center_x - header_w // 2 + hx_off,
+            top_y - header_h + hy_off,
+            header_w,
+            header_h,
+        )
 
         buttons = {}
-        buttons["TRAIN"] = Button(center_x - btn_w // 2, top_y, btn_w, btn_h, "TRAIN", 28, thickness=2, font_path=self.font_path)
+        tx, ty = offsets.get("train", (0, 0))
+        buttons["TRAIN"] = Button(center_x - btn_w // 2 + tx, top_y + ty, btn_w, btn_h, "TRAIN", 28, thickness=2, font_path=self.font_path)
 
         grid_labels = [
             ("EVALUATE", "EVALUATE"),
@@ -154,9 +177,11 @@ class MainMenu:
             col = idx % 2
             x = left_x + col * (btn_w + gap_y)
             y = start_y + row * (btn_h + gap_y)
-            buttons[key] = Button(x, y, btn_w, btn_h, label, 22, thickness=2, font_path=self.font_path)
+            dx, dy = offsets.get(key.lower(), (0, 0))
+            buttons[key] = Button(x + dx, y + dy, btn_w, btn_h, label, 22, thickness=2, font_path=self.font_path)
 
-        buttons["EXIT"] = Button(self.screen_rect.width - 90, 30, 70, 35, "EXIT", 18, thickness=2, font_path=self.font_path)
+        ex, ey = offsets.get("exit", (0, 0))
+        buttons["EXIT"] = Button(self.screen_rect.width - 90 + ex, 30 + ey, 70, 35, "EXIT", 18, thickness=2, font_path=self.font_path)
         return header_rect, buttons
 
     def handle_events(self, events):
@@ -233,6 +258,9 @@ def run_gui():
             menu.draw(screen) # Draw menu layout and buttons.
             if next_state != "MENU":
                 state = next_state # Advance to chosen state.
+                if state == "TRAIN" and run_ctx.run_id is None:
+                    run_ctx = start_train_run(run_ctx)
+                    print(f"[TCS] TRAIN run created: run_id={run_ctx.run_id}")
                 placeholder_title = state
                 if state == "QUIT":
                     running = False # Exit button terminates loop.
