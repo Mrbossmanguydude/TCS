@@ -1,0 +1,29 @@
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test/type caches
+.pytest_cache/
+.mypy_cache/
+
+# Editor/system files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Runtime-generated project data (keep folder structure, ignore outputs)
+data/metrics/*.db
+data/logs/**/*.json
+data/logs/**/*.txt
+data/replays/**
+data/screenshots/**
+data/models/**
+data/maps/**

@@ -1,31 +1,60 @@
 """
-Pygame GUI: This is the frontend in its entirety, taking elements from the backend
-to run. It consists of many screens and sub-screens (which will be detailed within the same
-file as the screens themselves) which allow for a modular, maintainable and easy to test structure.
-Pygame is used primarily due to my familiarity with it, as well as for reasons mentioned in
-the software requirements section of Analysis within the documentation. 
-Once finished, it should align with mockups made as well as interviews with the client.
+Main Traffic Control System (TCS) GUI.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Dict, Tuple
 
-# Ensure project root is on sys.path when running as a script (e.g., python src/gui/gui_main.py).
+# Allow direct execution:
+#   python src/gui/gui_main.py
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pygame
+from src.gui.setup_screen import SetupScreen
 from src.utils.run_init import RunContext, init_run, start_train_run
 
-# CONSTANTS -------------------------------------------------------------------
-FPS = 60  # Stable frame pacing for smooth input/animation, 60 FPS is typical for most Pygame code.
-SCREEN_SIZE = (1200, 700)  # Fixed canvas so layout stays predictable, given in (x, y) form.
-BG = (34, 2, 1)  # Dark background for contrast.
-FG = (235, 235, 235)  # Primary text/line color for readability.
-ACCENT = (180, 180, 180)  # Secondary text for hints/placeholders.
 
-UI_OFFSETS = {
+# --------------------------------------------------------------------------- #
+# Core constants                                                              #
+# --------------------------------------------------------------------------- #
+
+FPS = 60
+SCREEN_SIZE = (1200, 700)
+
+# Shared color palette.
+BG = (53, 62, 67)
+FG = (235, 235, 235)
+ACCENT = (180, 180, 180)
+HILITE = (255, 215, 0)
+
+# Larger baseline typography for readability.
+UI_TEXT_SIZES: Dict[str, int] = {
+    "header": 110,
+    "button": 36,
+    "button_primary": 44,
+    "button_small": 24,
+    "screen_title": 40,
+    "screen_hint": 26,
+}
+
+# Centralized border colors so buttons remain visually distinct.
+MENU_BUTTON_COLORS: Dict[str, tuple[int, int, int]] = {
+    "TRAIN": (0, 71, 171),
+    "EVALUATE": (128, 0, 128),
+    "DEMO": (178, 34, 34),
+    "REPLAYS": (85, 130, 20),
+    "SETUP": (60, 60, 60),
+    "OPTIONS": (0, 51, 102),
+    "CONTROLS": (0, 139, 139),
+}
+
+# Manual offsets and sizes for quick UI tuning.
+UI_OFFSETS: Dict[str, Dict[str, Tuple[int, int] | int | Tuple[int, int]]] = {
     "menu": {
         "train": (0, 0),
         "evaluate": (0, 0),
@@ -35,69 +64,129 @@ UI_OFFSETS = {
         "options": (0, 0),
         "controls": (0, 0),
         "exit": (0, 0),
-        "header": (0, 0),
+        "header": (0, 10),
+        "button_size": (300, 108),
+        "button_gap": 16,
+        "header_size": (560, 170),
+        "header_text_size": 110,
+        "button_text_size": 36,
+        "train_text_size": 44,
+        "exit_size": (96, 48),
+        "exit_text_size": 24,
+    },
+    "setup": {
+        "left_panel": (0, 0),
+        "preview_panel": (0, 0),
+        "back_button": (0, 0),
+        "seed_button": (0, 0),
+        "phase_minus": (0, 0),
+        "phase_plus": (0, 0),
+        "level_minus": (0, 0),
+        "level_plus": (0, 0),
+        "road_minus": (0, 0),
+        "road_plus": (0, 0),
+        "struct_minus": (0, 0),
+        "struct_plus": (0, 0),
+        "refresh_button": (0, 0),
+        "save_button": (0, 0),
+        "seed_label": (0, 0),
+        "seed_value": (0, 0),
+        "phase_label": (0, 0),
+        "phase_value": (0, 0),
+        "level_label": (0, 0),
+        "level_value": (0, 0),
+        "level_total": (0, 0),
+        "road_label": (0, 0),
+        "road_value": (0, 0),
+        "struct_label": (0, 0),
+        "struct_value": (0, 0),
+        "status": (0, 0),
+        "info_block": (0, 0),
     },
 }
-HILITE = (255, 215, 0)  # Highlight
 
 
-###############################################################################
-# HELPERS                                                                     #
-###############################################################################
+# --------------------------------------------------------------------------- #
+# Rendering helpers                                                           #
+# --------------------------------------------------------------------------- #
 
-
-def _vertical_gradient(size: tuple, top_color: tuple, bottom_color: tuple) -> pygame.Surface:
-    """A simple vertical gradient surface for depth without external assets; for
-       even easier implementation. This is a helper procedure.
+def _vertical_gradient(
+    size: tuple[int, int],
+    top_color: tuple[int, int, int],
+    bottom_color: tuple[int, int, int],
+) -> pygame.Surface:
     """
-    w, h = size # Parses the size tuple for the width and height.
-    surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    for y in range(h):
-        t = y / max(1, h - 1)
-        r = int(top_color[0] * (1 - t) + bottom_color[0] * t)
-        g = int(top_color[1] * (1 - t) + bottom_color[1] * t)
-        b = int(top_color[2] * (1 - t) + bottom_color[2] * t)
-        pygame.draw.line(surf, (r, g, b), (0, y), (w, y)) # Creates lines to create a gradient effect.
-    return surf
+    Build a vertical gradient surface.
+
+    Args:
+        size: Target (width, height) in pixels.
+        top_color: RGB color at y=0.
+        bottom_color: RGB color at y=height-1.
+
+    Returns:
+        Surface containing a top-to-bottom color mix.
+    """
+    width, height = size
+    surface = pygame.Surface((width, height), pygame.SRCALPHA)
+    for y_pos in range(height):
+        blend = y_pos / max(1, height - 1)
+        red = int(top_color[0] * (1 - blend) + bottom_color[0] * blend)
+        green = int(top_color[1] * (1 - blend) + bottom_color[1] * blend)
+        blue = int(top_color[2] * (1 - blend) + bottom_color[2] * blend)
+        pygame.draw.line(surface, (red, green, blue), (0, y_pos), (width, y_pos))
+    return surface
 
 
-def draw_text(surface, font_path, text, pos, fontsize, color):
-    """Centralised text rendering; uses custom font if one exists in the path given."""
-    font = pygame.font.Font(font_path, fontsize) if font_path else pygame.font.SysFont(None, fontsize) # Creates the font obj and uses a system font if custom not available.
-    word = font.render(text, True, color) # Word becomes a blit-able Pygame Surface.
-    surface.blit(word, pos) # Displays the word to the screen at desired position.
+def draw_text_center(
+    surface: pygame.Surface,
+    font_path: Path | None,
+    text: str,
+    center: tuple[int, int],
+    font_size: int,
+    color: tuple[int, int, int],
+) -> None:
+    """
+    Render single-line text centered at the given point.
+    """
+    font = pygame.font.Font(font_path, font_size) if font_path else pygame.font.SysFont(None, font_size)
+    rendered = font.render(text, True, color)
+    rect = rendered.get_rect(center=center)
+    surface.blit(rendered, rect)
 
-###############################################################################
-# CLASSES                                                                     #
-###############################################################################
 
+# --------------------------------------------------------------------------- #
+# Widgets                                                                     #
+# --------------------------------------------------------------------------- #
 
 class Button:
+    """
+    Reusable clickable button with centered label rendering.
+    """
+
     def __init__(
         self,
-        x,
-        y,
-        width,
-        height,
-        text,
-        text_size,
-        bordercolor=HILITE,
-        textcolor=FG,
-        thickness=2,
-        font_path=None,
-    ):
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        text: str,
+        text_size: int,
+        bordercolor: tuple[int, int, int] = HILITE,
+        textcolor: tuple[int, int, int] = FG,
+        thickness: int = 2,
+        font_path: Path | None = None,
+    ) -> None:
         self.rect = pygame.Rect(x, y, width, height)
-        self.text = text  # Label visible to user.
+        self.text = text
         self.text_size = text_size
         self.textcolor = textcolor
         self.bordercolor = bordercolor
         self.thickness = thickness
         self.font_path = font_path
 
-    def handle_event(self, event):
+    def handle_event(self, event: pygame.event.Event) -> bool:
         """
-        Return True on left click release inside the rect.
-        Stateless check so the main loop stays simple.
+        Return True for left click release events inside the button rect.
         """
         return (
             event.type == pygame.MOUSEBUTTONUP
@@ -105,34 +194,34 @@ class Button:
             and self.rect.collidepoint(event.pos)
         )
 
-    def draw(self, screen):
+    def draw(self, screen: pygame.Surface) -> None:
         """
-        Render a metallic button: gradient fill, soft highlight, rounded border, shadowed text.
-        Visual aids help users spot interactable elements quickly, hence the extra GUI elements.
+        Draw gradient fill, rounded border, and centered label.
         """
-        top = (90, 95, 100)  # Lighter top for sheen.
-        bottom = (50, 52, 55)  # Darker base for depth.
-        gradient = _vertical_gradient((self.rect.width, self.rect.height), top, bottom)
-        radius = 10  # Rounded corners for softer feel.
-        mask = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA) # Using a mask to make it pixel perfect.
+        gradient = _vertical_gradient((self.rect.width, self.rect.height), (90, 95, 100), (50, 52, 55))
+
+        radius = 10
+        mask = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
         pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
         gradient.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(gradient, self.rect.topleft)
 
-        pygame.draw.rect(screen, self.bordercolor, self.rect, self.thickness, border_radius=radius) # Draws the Button's Rect.
+        pygame.draw.rect(screen, self.bordercolor, self.rect, self.thickness, border_radius=radius)
 
-        shadow_offset = 1
-        draw_text( # Draws the shadow.
-            screen,
-            self.font_path,
-            self.text,
-            (self.rect.x + 12 + shadow_offset, self.rect.y + 10 + shadow_offset),
-            self.text_size,
-            (0, 0, 0),
-        )
-        draw_text(screen, self.font_path, self.text, (self.rect.x + 12, self.rect.y + 10), self.text_size, self.textcolor) # Draws the Button's text.
+        font = pygame.font.Font(self.font_path, self.text_size) if self.font_path else pygame.font.SysFont(None, self.text_size)
+        text = font.render(self.text, True, self.textcolor)
+        text_rect = text.get_rect(center=self.rect.center)
+        shadow = font.render(self.text, True, (0, 0, 0))
+        screen.blit(shadow, text_rect.move(1, 1))
+        screen.blit(text, text_rect)
+
+
 class MainMenu:
-    def __init__(self, screen_rect: pygame.Rect, font_path=None):
+    """
+    Main menu screen.
+    """
+
+    def __init__(self, screen_rect: pygame.Rect, font_path: Path | None = None) -> None:
         self.screen_rect = screen_rect
         self.font_path = font_path
         self.bg_color = BG
@@ -140,56 +229,89 @@ class MainMenu:
         self.header_text = "MENU"
         self.header_rect, self.buttons = self._build_buttons()
 
-    def _build_buttons(self):
+    def _build_buttons(self) -> tuple[pygame.Rect, dict[str, Button]]:
+        """
+        Create header placement and all menu buttons from `UI_OFFSETS`.
+        """
         offsets = UI_OFFSETS.get("menu", {})
         center_x = self.screen_rect.centerx
         center_y = self.screen_rect.centery
-        btn_w, btn_h = 220, 80  # Button sizing for prominence.
-        gap_y = 12  # Vertical spacing to keep grid breathable.
-        top_y = center_y - (btn_h * 3) # Reserve room for header/grid.
 
-        header_w, header_h = 260, 90 # Larger header area for hierarchy.
+        btn_w, btn_h = offsets.get("button_size", (300, 108))
+        gap_y = int(offsets.get("button_gap", 16))
+        top_y = center_y - int(btn_h * 1.75)
+
+        header_w, header_h = offsets.get("header_size", (560, 170))
         hx_off, hy_off = offsets.get("header", (0, 0))
         header_rect = pygame.Rect(
             center_x - header_w // 2 + hx_off,
-            top_y - header_h + hy_off,
+            top_y - header_h - 12 + hy_off,
             header_w,
             header_h,
         )
 
-        buttons = {}
-        tx, ty = offsets.get("train", (0, 0))
-        buttons["TRAIN"] = Button(center_x - btn_w // 2 + tx, top_y + ty, btn_w, btn_h, "TRAIN", 28, thickness=2, font_path=self.font_path)
+        buttons: dict[str, Button] = {}
 
-        grid_labels = [
-            ("EVALUATE", "EVALUATE"),
-            ("DEMO", "DEMO"),
-            ("REPLAYS", "REPLAYS"),
-            ("SETUP", "SETUP"),
-            ("OPTIONS", "OPTIONS"),
-            ("CONTROLS", "CONTROLS"),
-        ]
+        tx, ty = offsets.get("train", (0, 0))
+        buttons["TRAIN"] = Button(
+            center_x - btn_w // 2 + tx,
+            top_y + ty,
+            btn_w,
+            btn_h,
+            "TRAIN",
+            int(offsets.get("train_text_size", UI_TEXT_SIZES["button_primary"])),
+            thickness=2,
+            font_path=self.font_path,
+            bordercolor=MENU_BUTTON_COLORS["TRAIN"],
+            textcolor=(230, 240, 255),
+        )
+
+        grid_labels = ["EVALUATE", "DEMO", "REPLAYS", "SETUP", "OPTIONS", "CONTROLS"]
         start_y = top_y + btn_h + gap_y
         grid_w = btn_w * 2 + gap_y
         left_x = center_x - (grid_w // 2)
-        for idx, (key, label) in enumerate(grid_labels):
+
+        for idx, key in enumerate(grid_labels):
             row = idx // 2
             col = idx % 2
             x = left_x + col * (btn_w + gap_y)
             y = start_y + row * (btn_h + gap_y)
             dx, dy = offsets.get(key.lower(), (0, 0))
-            buttons[key] = Button(x + dx, y + dy, btn_w, btn_h, label, 22, thickness=2, font_path=self.font_path)
+            buttons[key] = Button(
+                x + dx,
+                y + dy,
+                btn_w,
+                btn_h,
+                key,
+                int(offsets.get("button_text_size", UI_TEXT_SIZES["button"])),
+                thickness=2,
+                font_path=self.font_path,
+                bordercolor=MENU_BUTTON_COLORS[key],
+                textcolor=(240, 240, 240),
+            )
 
         ex, ey = offsets.get("exit", (0, 0))
-        buttons["EXIT"] = Button(self.screen_rect.width - 90 + ex, 30 + ey, 70, 35, "EXIT", 18, thickness=2, font_path=self.font_path)
+        ex_w, ex_h = offsets.get("exit_size", (96, 48))
+        buttons["EXIT"] = Button(
+            self.screen_rect.width - ex_w - 20 + ex,
+            30 + ey,
+            ex_w,
+            ex_h,
+            "EXIT",
+            int(offsets.get("exit_text_size", UI_TEXT_SIZES["button_small"])),
+            thickness=2,
+            font_path=self.font_path,
+        )
         return header_rect, buttons
 
-    def handle_events(self, events):
-        """Route mouse clicks to button names; returns next state string."""
+    def handle_events(self, events: list[pygame.event.Event]) -> str:
+        """
+        Translate click events into a next-state token.
+        """
         for event in events:
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                for name, btn in self.buttons.items():
-                    if btn.rect.collidepoint(event.pos):
+                for name, button in self.buttons.items():
+                    if button.handle_event(event):
                         if name == "EXIT":
                             return "QUIT"
                         if name == "TRAIN":
@@ -197,122 +319,127 @@ class MainMenu:
                         return name
         return "MENU"
 
-    def draw(self, screen: pygame.Surface):
-        """Render frame, header, and all menu buttons."""
+    def draw(self, screen: pygame.Surface) -> None:
+        """
+        Draw menu header text and menu buttons.
+        """
         screen.fill(self.bg_color)
-        margin = 40 # Frame inset to avoid edge crowding, might remove if it doesnt look visually pleasing to the client.
-        frame_rect = pygame.Rect(margin, margin, self.screen_rect.width - 2 * margin, self.screen_rect.height - 2 * margin)
-        pygame.draw.rect(screen, self.line_color, frame_rect, 2)
-        header_color = FG
-        draw_text(screen, self.font_path, self.header_text, (self.header_rect.x + 55, self.header_rect.y + 20), 68, header_color)
-        pygame.draw.line(
-            screen,
-            header_color,
-            (self.header_rect.x + 10, self.header_rect.bottom - 10),
-            (self.header_rect.right - 10, self.header_rect.bottom - 10),
-            2,
-        )
-        for _, btn in self.buttons.items():
-            btn.draw(screen) # Draws all buttons.
+
+        font_size = int(UI_OFFSETS.get("menu", {}).get("header_text_size", UI_TEXT_SIZES["header"]))
+        draw_text_center(screen, self.font_path, self.header_text, self.header_rect.center, font_size, FG)
+
+        for button in self.buttons.values():
+            button.draw(screen)
 
 
-# MAIN LOOP -------------------------------------------------------------------
-def run_gui():
+# --------------------------------------------------------------------------- #
+# Main loop                                                                   #
+# --------------------------------------------------------------------------- #
+
+def run_gui() -> None:
     """
-    Main loop with interchangable states.
+    Use:
+    Run the TCS GUI state loop.
+
+    Inputs:
+    - None.
+
+    Output:
+    None. Opens the GUI window and runs until exit.
     """
-    # Initialise run context before GUI starts.
     run_ctx: RunContext = init_run()
-    print(f"[TCS] Run initialised: run_id={run_ctx.run_id} seed={run_ctx.seed} db={run_ctx.db_path}")
+    print(f"[TCS] Startup ready (seed={run_ctx.seed}).")
 
     pygame.init()
 
-    base_dir = Path(__file__).resolve().parents[2] # .../TCS
+    base_dir = Path(__file__).resolve().parents[2]
     font_path = base_dir / "assets" / "fonts" / "pixel_font-1.ttf"
     if not font_path.exists():
-        font_path = None # So UI still renders without assets.
+        font_path = None
 
-    screen = pygame.display.set_mode(SCREEN_SIZE)  # Fixed size keeps layout stable during development, might change to a better resolution as well as with fullscreen capability.
+    screen = pygame.display.set_mode(SCREEN_SIZE)
     pygame.display.set_caption("TCS GUI")
-    clock = pygame.time.Clock() # Frame pacing/ticks.
+    clock = pygame.time.Clock()
 
-    menu = MainMenu(screen.get_rect(), font_path=font_path)  # Centralized menu layout/interaction.
-    state = "MENU" # String based states makes it easy to fetch the state, but may change in the future.
-    placeholder_title = "" # Carries the last selected state for placeholder labels.
-    back_button = Button(40, 30, 70, 35, "BACK", 18, thickness=2, font_path=font_path)
+    menu = MainMenu(screen.get_rect(), font_path=font_path)
+    setup_screen = SetupScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets=UI_OFFSETS.get("setup", {}),
+    )
+    state = "MENU"
+    active_title = ""
+    back_button = Button(
+        40,
+        30,
+        96,
+        48,
+        "BACK",
+        UI_TEXT_SIZES["button_small"],
+        thickness=2,
+        font_path=font_path,
+    )
 
     running = True
     while running:
         events = pygame.event.get()
         for event in events:
             if event.type == pygame.QUIT:
-                running = False # Allow window close.
+                running = False
             if event.type == pygame.KEYUP and event.key == pygame.K_ESCAPE:
                 if state == "MENU":
-                    running = False #ESC quits from menu.
+                    running = False
                 else:
-                    state = "MENU" # ESC returns from sub-screens to menu.
+                    state = "MENU"
 
         if state == "MENU":
-            next_state = menu.handle_events(events) # Delegate click handling to menu.
-            menu.draw(screen) # Draw menu layout and buttons.
+            next_state = menu.handle_events(events)
+            menu.draw(screen)
             if next_state != "MENU":
-                state = next_state # Advance to chosen state.
+                state = next_state
                 if state == "TRAIN" and run_ctx.run_id is None:
                     run_ctx = start_train_run(run_ctx)
-                    print(f"[TCS] TRAIN run created: run_id={run_ctx.run_id}")
-                placeholder_title = state
+                    setup_screen.run_ctx = run_ctx
+                    print("[TCS] TRAIN logging initialised.")
+                active_title = state
                 if state == "QUIT":
-                    running = False # Exit button terminates loop.
-        else: 
-            # Additionally, for these cases for different states like options, train evaluate; The main processes will be delegated to their respective files. 
+                    running = False
+        elif state == "SETUP":
+            setup_screen.draw(screen)
+            next_state = setup_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
+        else:
             screen.fill(BG)
             back_button.draw(screen)
-            draw_text(
+
+            draw_text_center(
                 screen,
                 font_path,
-                f"{placeholder_title} (placeholder)",
-                (screen.get_width() // 2 - 140, screen.get_height() // 2 - 20),
-                28,
-                FG
+                active_title,
+                (screen.get_width() // 2, screen.get_height() // 2 - 20),
+                UI_TEXT_SIZES["screen_title"],
+                FG,
             )
-            draw_text(
+            draw_text_center(
                 screen,
                 font_path,
-                "Press ESC or BACK to return to menu",
-                (screen.get_width() // 2 - 200, screen.get_height() // 2 + 20),
-                20,
-                ACCENT
+                "Press ESC or BACK to return to MENU",
+                (screen.get_width() // 2, screen.get_height() // 2 + 28),
+                UI_TEXT_SIZES["screen_hint"],
+                ACCENT,
             )
+
             for event in events:
-                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                    if back_button.handle_event(event):
-                        state = "MENU" # Back returns to menu.
+                if back_button.handle_event(event):
+                    state = "MENU"
 
-        pygame.display.flip() # Present the frame.
-        clock.tick(FPS) # Cap FPS for consistent timing.
+        pygame.display.flip()
+        clock.tick(FPS)
 
-    pygame.quit() # End of program.
+    pygame.quit()
 
 
 if __name__ == "__main__":
     run_gui()
-
-'''
-Probable sequence of window implementation:
-1) Main Menu
-2) Controls (Changed with each new window)
-3) PopUp
-4) Scenario Setup
-5) Gen Preview + Map display
-6) Train setup
-7) Training
-8) Baseline Demo
-9) Evaluate
-10) Evaluating
-11) Usage Settings (General)
-12) Usage Settings (Advanced)
-13) Replay Browser
-
-Backend to be implemented first, with this skeleton in mind.
-'''
