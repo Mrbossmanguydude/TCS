@@ -1,5 +1,5 @@
 """
-Main Traffic Control System (TCS) GUI.
+Main Pygame entry point for the Traffic Control System (TCS) GUI.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 import pygame
 from src.gui.setup_screen import SetupScreen
+from src.gui.train_screen import TrainScreen
+from src.gui.ui_offsets import UI_OFFSETS
 from src.utils.run_init import RunContext, init_run, start_train_run
 
 
@@ -52,59 +54,6 @@ MENU_BUTTON_COLORS: Dict[str, tuple[int, int, int]] = {
     "OPTIONS": (0, 51, 102),
     "CONTROLS": (0, 139, 139),
 }
-
-# Manual offsets and sizes for quick UI tuning.
-UI_OFFSETS: Dict[str, Dict[str, Tuple[int, int] | int | Tuple[int, int]]] = {
-    "menu": {
-        "train": (0, 0),
-        "evaluate": (0, 0),
-        "demo": (0, 0),
-        "replays": (0, 0),
-        "setup": (0, 0),
-        "options": (0, 0),
-        "controls": (0, 0),
-        "exit": (0, 0),
-        "header": (0, 10),
-        "button_size": (300, 108),
-        "button_gap": 16,
-        "header_size": (560, 170),
-        "header_text_size": 110,
-        "button_text_size": 36,
-        "train_text_size": 44,
-        "exit_size": (96, 48),
-        "exit_text_size": 24,
-    },
-    "setup": {
-        "left_panel": (0, 0),
-        "preview_panel": (0, 0),
-        "back_button": (0, 0),
-        "seed_button": (0, 0),
-        "phase_minus": (0, 0),
-        "phase_plus": (0, 0),
-        "level_minus": (0, 0),
-        "level_plus": (0, 0),
-        "road_minus": (0, 0),
-        "road_plus": (0, 0),
-        "struct_minus": (0, 0),
-        "struct_plus": (0, 0),
-        "refresh_button": (0, 0),
-        "save_button": (0, 0),
-        "seed_label": (0, 0),
-        "seed_value": (0, 0),
-        "phase_label": (0, 0),
-        "phase_value": (0, 0),
-        "level_label": (0, 0),
-        "level_value": (0, 0),
-        "level_total": (0, 0),
-        "road_label": (0, 0),
-        "road_value": (0, 0),
-        "struct_label": (0, 0),
-        "struct_value": (0, 0),
-        "status": (0, 0),
-        "info_block": (0, 0),
-    },
-}
-
 
 # --------------------------------------------------------------------------- #
 # Rendering helpers                                                           #
@@ -358,7 +307,7 @@ def run_gui() -> None:
         font_path = None
 
     screen = pygame.display.set_mode(SCREEN_SIZE)
-    pygame.display.set_caption("TCS GUI")
+    pygame.display.set_caption("TCS")
     clock = pygame.time.Clock()
 
     menu = MainMenu(screen.get_rect(), font_path=font_path)
@@ -367,6 +316,12 @@ def run_gui() -> None:
         font_path=font_path,
         run_ctx=run_ctx,
         ui_offsets=UI_OFFSETS.get("setup", {}),
+    )
+    train_screen = TrainScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets=UI_OFFSETS.get("train", {}),
     )
     state = "MENU"
     active_title = ""
@@ -401,6 +356,9 @@ def run_gui() -> None:
                 if state == "TRAIN" and run_ctx.run_id is None:
                     run_ctx = start_train_run(run_ctx)
                     setup_screen.run_ctx = run_ctx
+                    train_screen.run_ctx = run_ctx
+                    train_screen.seed = int(run_ctx.seed)
+                    train_screen.reset_environment(initial=True)
                     print("[TCS] TRAIN logging initialised.")
                 active_title = state
                 if state == "QUIT":
@@ -408,6 +366,11 @@ def run_gui() -> None:
         elif state == "SETUP":
             setup_screen.draw(screen)
             next_state = setup_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
+        elif state == "TRAIN":
+            train_screen.draw(screen)
+            next_state = train_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
         else:

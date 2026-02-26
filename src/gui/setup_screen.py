@@ -1,22 +1,17 @@
 """
-Setup screen for training configuration preview.
+Setup screen for configuring training parameters and generating a map preview sub-window.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 import random
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional
 
 import pygame
 
 from src.utils.controller_prep import PreparedControllers, build_vn_feature_vector, prepare_vn_pn
-from src.utils.map_generation import (
-    clamp_phase,
-    generate_phase_map,
-    map_level_count,
-    phase_spec,
-)
+from src.utils.map_generation import clamp_phase, generate_phase_map, map_level_count, phase_spec
 from src.utils.run_init import save_manual_config_log, write_rolling_config
 
 
@@ -26,70 +21,85 @@ ACCENT = (180, 180, 180)
 HILITE = (255, 215, 0)
 PANEL_BG = (46, 53, 58)
 PANEL_BORDER = (78, 91, 99)
+BLOCKED = (27, 31, 35)
 ROAD_DISCRETE = (142, 155, 165)
 ROAD_CONTINUOUS = (125, 145, 176)
-ROAD_CENTER_MARK = (230, 230, 230)
-BLOCKED = (27, 31, 35)
-ROUNDABOUT_OUTER = (204, 172, 92)
-ROUNDABOUT_CENTER = (72, 78, 86)
 ROAD_TWO_LANE = (90, 150, 210)
 JUNCTION_ONE_LANE = (228, 171, 90)
 JUNCTION_TWO_LANE = (104, 222, 205)
 JUNCTION_T = (122, 195, 122)
 JUNCTION_CROSS = (190, 138, 222)
-SPAWN_COLOR = (122, 221, 109)
+ROUNDABOUT_OUTER = (204, 172, 92)
+ROUNDABOUT_CENTER = (72, 78, 86)
 DEST_COLOR = (245, 122, 122)
 
 
 class SetupScreen:
     """
-    Training setup preview screen.
+    Use:
+    Provide setup controls for TRAIN configuration and open a generated map preview
+    as a dedicated sub-window when requested by the user.
+
+    Attributes:
+    - screen_rect: Full display rectangle used for responsive layout.
+    - font_path: Optional custom font path.
+    - run_ctx: Shared runtime context for seed/config persistence.
+    - seed: Active setup seed used for deterministic generation.
+    - phase: Curriculum phase in range 1..6.
+    - level_index: Zero-based map complexity index for selected phase.
+    - road_density: Density multiplier for road generation.
+    - structure_density: Density multiplier for road structures.
+    - status_message: Latest UI status line shown at the bottom of the control panel.
+    - preview_visible: True only while the preview sub-window is open.
+    - preview_map: Latest generated map payload for rendering and controller prep.
+    - controllers: Prepared VN + PN metadata from current config.
+    - latest_feature_vector: Example VN vector from the primary preview vehicle.
     """
 
-    def __init__(self, screen_rect: pygame.Rect, font_path: Path | None = None, run_ctx: Any = None, ui_offsets: Dict[str, Tuple[int, int]] | None = None) -> None:
+    def __init__(
+        self,
+        screen_rect: pygame.Rect,
+        font_path: Path | None = None,
+        run_ctx: Any = None,
+        ui_offsets: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Use:
-        Build setup screen state, controls, and preview snapshots.
+        Create setup screen controls, layout rectangles, and initial deterministic
+        preview payload while keeping the preview window hidden by default.
 
         Inputs:
-        - screen_rect: Full display rectangle for this screen.
+        - screen_rect: Current display bounds.
         - font_path: Optional custom font path.
-        - run_ctx: Shared runtime context from startup initialisation.
+        - run_ctx: Optional startup run context.
 
         Output:
-        None. The object is initialised in-place for the GUI loop.
+        None. Instance state is initialised in place.
         """
         self.screen_rect = screen_rect
         self.font_path = font_path
         self.run_ctx = run_ctx
         self.ui_offsets = ui_offsets or {}
 
+        scenario_cfg = run_ctx.config.get("scenario", {}) if run_ctx is not None else {}
         self.seed = int(run_ctx.seed) if run_ctx is not None else random.randint(0, 2**31 - 1)
-        scenario_cfg = (run_ctx.config.get("scenario", {}) if run_ctx is not None else {})
-        phase_zero = int(scenario_cfg.get("phase", 0))
-        self.phase = clamp_phase(phase_zero + 1)
+        self.phase = clamp_phase(int(scenario_cfg.get("phase", 0)) + 1)
         self.level_index = 0
         self.road_density = float(scenario_cfg.get("preview_road_density", 0.72))
         self.structure_density = float(scenario_cfg.get("preview_structure_density", 0.62))
-        self.status_message = "Preview ready."
+
+        self.status_message = "Setup ready. Click GEN PREVIEW to open map preview."
+        self.preview_visible = False
         self.latest_feature_vector: List[float] = []
 
-        self.back_button = self._offset_rect("back_button", pygame.Rect(40, 30, 96, 48))
-        self.seed_button = self._offset_rect("seed_button", pygame.Rect(58, 232, 300, 50))
-        self.phase_minus = self._offset_rect("phase_minus", pygame.Rect(58, 338, 56, 50))
-        self.phase_plus = self._offset_rect("phase_plus", pygame.Rect(302, 338, 56, 50))
-        self.level_minus = self._offset_rect("level_minus", pygame.Rect(58, 418, 56, 50))
-        self.level_plus = self._offset_rect("level_plus", pygame.Rect(302, 418, 56, 50))
-        self.road_minus = self._offset_rect("road_minus", pygame.Rect(58, 498, 56, 50))
-        self.road_plus = self._offset_rect("road_plus", pygame.Rect(302, 498, 56, 50))
-        self.struct_minus = self._offset_rect("struct_minus", pygame.Rect(58, 568, 56, 50))
-        self.struct_plus = self._offset_rect("struct_plus", pygame.Rect(302, 568, 56, 50))
-        self.refresh_button = self._offset_rect("refresh_button", pygame.Rect(58, 624, 145, 30))
-        self.save_button = self._offset_rect("save_button", pygame.Rect(213, 624, 145, 30))
+        # Asset cache for image-based preview rendering.
+        self.road_h_img: Optional[pygame.Surface] = None
+        self.road_v_img: Optional[pygame.Surface] = None
+        self.car_img: Optional[pygame.Surface] = None
+        self._scaled_cache: Dict[tuple[str, int], pygame.Surface] = {}
+        self._load_preview_assets()
 
-        self.left_panel = self._offset_rect("left_panel", pygame.Rect(40, 118, 336, self.screen_rect.height - 158))
-        self.preview_panel = self._offset_rect("preview_panel", pygame.Rect(398, 118, self.screen_rect.width - 438, self.screen_rect.height - 158))
-
+        # Build initial deterministic payload without opening the preview window.
         self.preview_map = generate_phase_map(
             self.seed,
             self.phase,
@@ -99,66 +109,273 @@ class SetupScreen:
         )
         self.controllers: PreparedControllers = self._prepare_controllers()
         self._refresh_feature_preview()
-        self._print_preview_metrics("init")
         self._sync_run_context()
+        self._print_preview_metrics("init")
 
-    def _offset(self, key: str) -> tuple[int, int]:
+        self._build_layout()
+
+    def _offset_int(self, name: str, default: int) -> int:
         """
         Use:
-        Get pixel offset tuple for a setup UI element.
+        Read one integer UI offset/size value from setup offsets.
 
         Inputs:
-        - key: Offset key in `ui_offsets`.
+        - name: Offset key in `ui_offsets`.
+        - default: Fallback integer value.
 
         Output:
-        Tuple `(dx, dy)`.
+        Integer value for the requested key.
         """
-        value = self.ui_offsets.get(key, (0, 0))
+        value = self.ui_offsets.get(name, default)
+        if isinstance(value, (int, float)):
+            return int(value)
+        return int(default)
+
+    def _offset_xy(self, name: str, default: tuple[int, int]) -> tuple[int, int]:
+        """
+        Use:
+        Read one 2D UI offset tuple from setup offsets.
+
+        Inputs:
+        - name: Offset key in `ui_offsets`.
+        - default: Fallback `(x, y)` tuple.
+
+        Output:
+        Tuple `(x, y)` offset for the requested key.
+        """
+        value = self.ui_offsets.get(name, default)
         if isinstance(value, tuple) and len(value) == 2:
             return int(value[0]), int(value[1])
-        return 0, 0
+        return default
 
-    def _offset_rect(self, key: str, rect: pygame.Rect) -> pygame.Rect:
+    def _text_pos(self, name: str, base: tuple[int, int]) -> tuple[int, int]:
         """
         Use:
-        Return a moved copy of `rect` using an offset key.
+        Shift a text anchor position by configured UI offsets.
 
         Inputs:
-        - key: Offset key in `ui_offsets`.
-        - rect: Base rectangle before applying offset.
-
-        Output:
-        Offset-adjusted rectangle.
-        """
-        dx, dy = self._offset(key)
-        return rect.move(dx, dy)
-
-    def _text_pos(self, key: str, base: tuple[int, int]) -> tuple[int, int]:
-        """
-        Use:
-        Apply offset key to a base text anchor coordinate.
-
-        Inputs:
-        - key: Offset key in `ui_offsets`.
-        - base: Base `(x, y)` position.
+        - name: Offset key in `ui_offsets`.
+        - base: Base `(x, y)` anchor.
 
         Output:
         Offset-adjusted `(x, y)` position.
         """
-        dx, dy = self._offset(key)
+        dx, dy = self._offset_xy(name, (0, 0))
         return base[0] + dx, base[1] + dy
+
+    def _build_layout(self) -> None:
+        """
+        Use:
+        Build all setup panel and button rectangles with explicit spacing so controls
+        do not overlap and remain readable.
+
+        Inputs:
+        - None. Uses `self.screen_rect`.
+
+        Output:
+        None. Rectangles are stored on the instance.
+        """
+        back_x, back_y = self._offset_xy("back_pos", (34, 28))
+        back_w, back_h = self._offset_xy("back_size", (96, 46))
+        self.back_button = pygame.Rect(back_x, back_y, back_w, back_h)
+
+        margin = self._offset_int("panel_margin", 34)
+        top = self._offset_int("panel_top", 108)
+        bottom_margin = self._offset_int("panel_bottom_margin", 24)
+        panel_height = self.screen_rect.height - top - bottom_margin
+
+        left_panel_w = self._offset_int("left_panel_width", 392)
+        panel_gap = self._offset_int("panel_gap", 20)
+        left_dx, left_dy = self._offset_xy("left_panel_offset", (0, 0))
+        right_dx, right_dy = self._offset_xy("right_panel_offset", (0, 0))
+
+        self.left_panel = pygame.Rect(margin + left_dx, top + left_dy, left_panel_w, panel_height)
+        right_x = self.left_panel.right + panel_gap + right_dx
+        right_y = top + right_dy
+        right_w = self.screen_rect.width - right_x - margin
+        self.right_panel = pygame.Rect(right_x, right_y, right_w, panel_height)
+
+        cx = self.left_panel.x + self._offset_int("control_pad_x", 22)
+        row_y = self.left_panel.y + self._offset_int("control_start_y", 132)
+        row_gap = self._offset_int("row_gap", 78)
+        row_shift = self._offset_int("row_shift_y", 0)
+
+        seed_dx, seed_dy = self._offset_xy("seed_button_offset", (0, 0))
+        pm_dx, pm_dy = self._offset_xy("pm_buttons_offset", (0, 0))
+        pm_w, pm_h = self._offset_xy("pm_button_size", (50, 44))
+        pm_x_gap = self._offset_int("pm_x_gap", 238)
+
+        seed_w = self.left_panel.width - self._offset_int("seed_button_w_pad", 44)
+        seed_h = self._offset_int("seed_button_h", 44)
+        self.seed_button = pygame.Rect(cx + seed_dx, row_y - 36 + row_shift + seed_dy, seed_w, seed_h)
+
+        self.phase_minus = pygame.Rect(cx + pm_dx, row_y + row_gap - 10 + row_shift + pm_dy, pm_w, pm_h)
+        self.phase_plus = pygame.Rect(cx + pm_x_gap + pm_dx, row_y + row_gap - 10 + row_shift + pm_dy, pm_w, pm_h)
+
+        self.level_minus = pygame.Rect(cx + pm_dx, row_y + row_gap * 2 - 10 + row_shift + pm_dy, pm_w, pm_h)
+        self.level_plus = pygame.Rect(cx + pm_x_gap + pm_dx, row_y + row_gap * 2 - 10 + row_shift + pm_dy, pm_w, pm_h)
+
+        self.road_minus = pygame.Rect(cx + pm_dx, row_y + row_gap * 3 - 10 + row_shift + pm_dy, pm_w, pm_h)
+        self.road_plus = pygame.Rect(cx + pm_x_gap + pm_dx, row_y + row_gap * 3 - 10 + row_shift + pm_dy, pm_w, pm_h)
+
+        self.struct_minus = pygame.Rect(cx + pm_dx, row_y + row_gap * 4 - 10 + row_shift + pm_dy, pm_w, pm_h)
+        self.struct_plus = pygame.Rect(cx + pm_x_gap + pm_dx, row_y + row_gap * 4 - 10 + row_shift + pm_dy, pm_w, pm_h)
+
+        footer_y = self.left_panel.bottom - self._offset_int("footer_from_bottom", 124)
+        preview_dx, preview_dy = self._offset_xy("preview_button_offset", (0, 0))
+        refresh_dx, refresh_dy = self._offset_xy("refresh_button_offset", (0, 0))
+        save_dx, save_dy = self._offset_xy("save_button_offset", (0, 0))
+
+        preview_h = self._offset_int("preview_button_h", 40)
+        mini_h = self._offset_int("mini_button_h", 34)
+        mini_gap = self._offset_int("mini_buttons_gap", 8)
+        preview_to_mini_gap = self._offset_int("preview_to_mini_gap", 48)
+
+        self.preview_button = pygame.Rect(
+            cx + preview_dx,
+            footer_y + preview_dy,
+            self.left_panel.width - self._offset_int("preview_button_w_pad", 44),
+            preview_h,
+        )
+        half_w = (self.left_panel.width - self._offset_int("mini_buttons_w_pad", 52)) // 2
+        self.refresh_button = pygame.Rect(
+            cx + refresh_dx,
+            footer_y + preview_to_mini_gap + refresh_dy,
+            half_w,
+            mini_h,
+        )
+        self.save_button = pygame.Rect(
+            self.refresh_button.right + mini_gap + save_dx,
+            footer_y + preview_to_mini_gap + save_dy,
+            half_w,
+            mini_h,
+        )
+
+        # Preview appears as a sub-window only when `preview_visible` is True.
+        preview_max_w = self._offset_int("preview_window_w", 860)
+        preview_max_h = self._offset_int("preview_window_h", 560)
+        preview_margin_w = self._offset_int("preview_window_margin_w", 120)
+        preview_margin_h = self._offset_int("preview_window_margin_h", 120)
+        preview_shift_x, preview_shift_y = self._offset_xy("preview_window_offset", (0, 0))
+
+        pw = min(preview_max_w, self.screen_rect.width - preview_margin_w)
+        ph = min(preview_max_h, self.screen_rect.height - preview_margin_h)
+        self.preview_window = pygame.Rect(
+            self.screen_rect.centerx - pw // 2 + preview_shift_x,
+            self.screen_rect.centery - ph // 2 + preview_shift_y,
+            pw,
+            ph,
+        )
+        close_w, close_h = self._offset_xy("preview_close_size", (96, 36))
+        close_inset_x, close_inset_y = self._offset_xy("preview_close_inset", (22, 14))
+        self.preview_close_button = pygame.Rect(
+            self.preview_window.right - close_w - close_inset_x,
+            self.preview_window.y + close_inset_y,
+            close_w,
+            close_h,
+        )
+
     def _font(self, size: int) -> pygame.font.Font:
         """
         Use:
-        Resolve configured font with fallback when custom font is unavailable.
+        Resolve custom or fallback system font for UI text.
 
         Inputs:
-        - size: Font size in pixels.
+        - size: Font pixel size.
 
         Output:
         Pygame font object.
         """
         return pygame.font.Font(self.font_path, size) if self.font_path else pygame.font.SysFont(None, size)
+
+    def _project_root(self) -> Path:
+        """
+        Use:
+        Resolve project root for asset lookup and persistence writes.
+
+        Inputs:
+        - None.
+
+        Output:
+        Absolute project root path.
+        """
+        if self.run_ctx is not None:
+            return Path(self.run_ctx.base_dir)
+        return Path(__file__).resolve().parents[2]
+
+    def _load_image(self, candidates: List[Path]) -> Optional[pygame.Surface]:
+        """
+        Use:
+        Load first existing image path from a candidate list.
+
+        Inputs:
+        - candidates: Ordered list of candidate filesystem paths.
+
+        Output:
+        Loaded pygame surface, or None when all candidates are missing.
+        """
+        for path in candidates:
+            if path.exists():
+                try:
+                    return pygame.image.load(path.as_posix()).convert_alpha()
+                except Exception:
+                    return None
+        return None
+
+    def _load_preview_assets(self) -> None:
+        """
+        Use:
+        Load road/car sprites so preview rendering uses project image assets for
+        primary road types and vehicles.
+
+        Inputs:
+        - None.
+
+        Output:
+        None. Loaded surfaces are stored on the instance.
+        """
+        root = self._project_root()
+        self.road_h_img = self._load_image(
+            [
+                root / "assets" / "road_imgs" / "road_horizontal.png",
+                root / "assets" / "road_horizontal.png",
+            ]
+        )
+        self.road_v_img = self._load_image(
+            [
+                root / "assets" / "road_imgs" / "road_vertical.png",
+                root / "assets" / "road_vertical.png",
+            ]
+        )
+        self.car_img = self._load_image(
+            [
+                root / "assets" / "road_imgs" / "vehicle_imgs" / "car.png",
+                root / "assets" / "vehicle_imgs" / "car.png",
+            ]
+        )
+
+    def _scaled_asset(self, key: str, image: Optional[pygame.Surface], tile: int) -> Optional[pygame.Surface]:
+        """
+        Use:
+        Return a cached, tile-sized version of a source sprite.
+
+        Inputs:
+        - key: Cache key prefix.
+        - image: Source image.
+        - tile: Target tile size in pixels.
+
+        Output:
+        Scaled surface or None if source image is unavailable.
+        """
+        if image is None:
+            return None
+        cache_key = (key, tile)
+        cached = self._scaled_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        scaled = pygame.transform.smoothscale(image, (tile, tile))
+        self._scaled_cache[cache_key] = scaled
+        return scaled
 
     def _prepare_controllers(self) -> PreparedControllers:
         """
@@ -166,22 +383,22 @@ class SetupScreen:
         Prepare VN + PN metadata from current runtime config.
 
         Inputs:
-        - None. Uses `self.run_ctx` and project root.
+        - None. Uses `self.run_ctx` when available.
 
         Output:
-        `PreparedControllers` metadata object.
+        Prepared controller metadata object.
         """
-        base_dir = self.run_ctx.base_dir if self.run_ctx is not None else Path(__file__).resolve().parents[2]
+        base_dir = self._project_root()
         cfg = self.run_ctx.config if self.run_ctx is not None else {}
         return prepare_vn_pn(cfg, base_dir)
 
     def _refresh_feature_preview(self) -> None:
         """
         Use:
-        Build one VN feature vector from current preview vehicle state.
+        Build one representative VN feature vector from current preview vehicles.
 
         Inputs:
-        - None. Uses the first preview vehicle and nearby preview spawns.
+        - None.
 
         Output:
         None. Updates `self.latest_feature_vector`.
@@ -190,8 +407,8 @@ class SetupScreen:
         if not self.preview_map.vehicles:
             return
         primary = self.preview_map.vehicles[0]
-        neighbour_nodes = [vehicle.spawn for vehicle in self.preview_map.vehicles[1:3]]
-        self.latest_feature_vector = build_vn_feature_vector(primary, self.preview_map, neighbour_nodes)
+        nearby = [vehicle.spawn for vehicle in self.preview_map.vehicles[1:3]]
+        self.latest_feature_vector = build_vn_feature_vector(primary, self.preview_map, nearby)
 
     def _draw_gradient_button(
         self,
@@ -203,17 +420,17 @@ class SetupScreen:
     ) -> None:
         """
         Use:
-        Draw a rounded gradient button with centered text.
+        Draw a rounded gradient button with centered label text.
 
         Inputs:
-        - screen: Target Pygame surface.
+        - screen: Destination surface.
         - rect: Button rectangle.
-        - text: Button label.
-        - text_size: Font size for label.
-        - border_color: Border RGB color.
+        - text: Label string.
+        - text_size: Font size for button label.
+        - border_color: RGB outline color.
 
         Output:
-        None. Draws directly onto `screen`.
+        None. Draws directly on `screen`.
         """
         gradient = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
         for y_pos in range(rect.height):
@@ -230,53 +447,51 @@ class SetupScreen:
         pygame.draw.rect(screen, border_color, rect, 2, border_radius=10)
 
         font = self._font(text_size)
-        text_surface = font.render(text, True, FG)
+        label = font.render(text, True, FG)
         shadow = font.render(text, True, (0, 0, 0))
-        text_rect = text_surface.get_rect(center=rect.center)
+        text_rect = label.get_rect(center=rect.center)
         screen.blit(shadow, text_rect.move(1, 1))
-        screen.blit(text_surface, text_rect)
+        screen.blit(label, text_rect)
 
     def _set_phase(self, phase: int) -> None:
         """
         Use:
-        Update phase and clamp map level to valid range.
+        Update selected phase and clamp level index to available complexity levels.
 
         Inputs:
         - phase: Candidate phase number.
 
         Output:
-        None. Regenerates preview and updates status.
+        None. Triggers preview regeneration and config sync.
         """
         self.phase = clamp_phase(phase)
-        max_levels = map_level_count(self.phase)
-        self.level_index = max(0, min(self.level_index, max_levels - 1))
+        self.level_index = max(0, min(self.level_index, map_level_count(self.phase) - 1))
         self._rebuild_preview("Phase updated.")
 
-    def _set_level(self, new_level: int) -> None:
+    def _set_level(self, level: int) -> None:
         """
         Use:
-        Update map complexity tier within active phase bounds.
+        Update selected map level index within the active phase range.
 
         Inputs:
-        - new_level: Candidate zero-based level index.
+        - level: Candidate zero-based level index.
 
         Output:
-        None. Regenerates preview and updates status.
+        None. Triggers preview regeneration and config sync.
         """
-        max_levels = map_level_count(self.phase)
-        self.level_index = max(0, min(new_level, max_levels - 1))
+        self.level_index = max(0, min(level, map_level_count(self.phase) - 1))
         self._rebuild_preview("Complexity updated.")
 
     def _set_road_density(self, delta: float) -> None:
         """
         Use:
-        Adjust road-density control and rebuild preview.
+        Apply road density adjustment and rebuild preview data.
 
         Inputs:
-        - delta: Increment/decrement value.
+        - delta: Signed adjustment value.
 
         Output:
-        None. Updates control state and map preview.
+        None.
         """
         self.road_density = max(0.35, min(1.35, round(self.road_density + delta, 2)))
         self._rebuild_preview("Road density updated.")
@@ -284,33 +499,64 @@ class SetupScreen:
     def _set_structure_density(self, delta: float) -> None:
         """
         Use:
-        Adjust structure-density control and rebuild preview.
+        Apply structure density adjustment and rebuild preview data.
 
         Inputs:
-        - delta: Increment/decrement value.
+        - delta: Signed adjustment value.
 
         Output:
-        None. Updates control state and map preview.
+        None.
         """
         self.structure_density = max(0.20, min(1.50, round(self.structure_density + delta, 2)))
         self._rebuild_preview("Structure density updated.")
 
+    def _sync_run_context(self) -> None:
+        """
+        Use:
+        Synchronize setup selections back into shared runtime context and write the
+        rolling runtime config snapshot.
+
+        Inputs:
+        - None. Uses current setup state.
+
+        Output:
+        None. Mutates `run_ctx` when available.
+        """
+        if self.run_ctx is None:
+            return
+
+        self.run_ctx.seed = int(self.seed)
+        self.run_ctx.config["seed"] = int(self.seed)
+
+        scenario = self.run_ctx.config.setdefault("scenario", {})
+        scenario["seed"] = int(self.seed)
+        scenario["phase"] = int(self.phase - 1)
+        scenario["map_size"] = int(self.preview_map.level_size)
+        scenario["continuous"] = bool(self.preview_map.continuous)
+        scenario["roundabouts_enabled"] = bool(self.preview_map.roundabouts_enabled)
+        scenario["preview_road_density"] = float(self.road_density)
+        scenario["preview_structure_density"] = float(self.structure_density)
+        scenario["preview_vehicle_count"] = int(len(self.preview_map.vehicles))
+
+        write_rolling_config(self.run_ctx.base_dir, self.run_ctx.config)
+
     def _print_preview_metrics(self, reason: str) -> None:
         """
         Use:
-        Print setup preview metrics to terminal for quick validation.
+        Print deterministic preview metrics to terminal for quick development checks.
 
         Inputs:
-        - reason: Trigger label for the print call.
+        - reason: Trigger label for this metrics emission.
 
         Output:
-        None. Writes a formatted line to stdout.
+        None. Writes one formatted log line to stdout.
         """
         preview = self.preview_map
         road_cells = len(preview.roads)
         total_cells = max(1, preview.width * preview.height)
         coverage = (road_cells / total_cells) * 100.0
         counts = preview.structure_counts
+
         print(
             "[SETUP PREVIEW]",
             f"reason={reason}",
@@ -335,16 +581,17 @@ class SetupScreen:
             f"prev_model={self.controllers.pn.uses_previous_model}",
         )
 
-    def _rebuild_preview(self, status: str | None = None) -> None:
+    def _rebuild_preview(self, status: Optional[str] = None) -> None:
         """
         Use:
-        Regenerate map preview and dependent setup metadata.
+        Regenerate preview map, recompute controller metadata, and resync runtime
+        config using current setup values.
 
         Inputs:
-        - status: Optional status message after rebuild.
+        - status: Optional status string shown in UI.
 
         Output:
-        None. Updates preview map, controller metadata, and runtime config sync.
+        None.
         """
         self.preview_map = generate_phase_map(
             self.seed,
@@ -360,38 +607,116 @@ class SetupScreen:
         if status:
             self.status_message = status
 
-    def _sync_run_context(self) -> None:
+    def _road_orientation(self, x_pos: int, y_pos: int) -> str:
         """
         Use:
-        Keep shared runtime context aligned with setup controls.
+        Determine whether a road tile should prefer horizontal or vertical sprite
+        rendering based on neighbouring road connectivity.
 
         Inputs:
-        - None. Uses current local setup values.
+        - x_pos: Tile x coordinate.
+        - y_pos: Tile y coordinate.
 
         Output:
-        None. Mutates `run_ctx` and updates rolling runtime config file.
+        Orientation token: `horizontal`, `vertical`, or `mixed`.
         """
-        if self.run_ctx is None:
-            return
+        roads = self.preview_map.roads
+        left = (x_pos - 1, y_pos) in roads
+        right = (x_pos + 1, y_pos) in roads
+        up = (x_pos, y_pos - 1) in roads
+        down = (x_pos, y_pos + 1) in roads
 
-        self.run_ctx.seed = int(self.seed)
-        self.run_ctx.config["seed"] = int(self.seed)
+        has_h = left or right
+        has_v = up or down
+        if has_h and not has_v:
+            return "horizontal"
+        if has_v and not has_h:
+            return "vertical"
+        return "mixed"
 
-        scenario = self.run_ctx.config.setdefault("scenario", {})
-        scenario["seed"] = int(self.seed)
-        scenario["phase"] = int(self.phase - 1)
-        scenario["map_size"] = int(self.preview_map.level_size)
-        scenario["continuous"] = bool(self.preview_map.continuous)
-        scenario["roundabouts_enabled"] = bool(self.preview_map.roundabouts_enabled)
-        scenario["preview_road_density"] = float(self.road_density)
-        scenario["preview_structure_density"] = float(self.structure_density)
-        scenario["preview_vehicle_count"] = int(len(self.preview_map.vehicles))
-        write_rolling_config(self.run_ctx.base_dir, self.run_ctx.config)
-
-    def handle_events(self, events: list[pygame.event.Event]) -> str:
+    def _draw_preview_map(self, screen: pygame.Surface, rect: pygame.Rect) -> None:
         """
         Use:
-        Process setup mouse events and return the next GUI state.
+        Render generated preview grid using image sprites for primary road segments
+        and vehicles, with color overlays for structures.
+
+        Inputs:
+        - screen: Target surface.
+        - rect: Available map-render rectangle within preview window.
+
+        Output:
+        None.
+        """
+        preview = self.preview_map
+        pygame.draw.rect(screen, BLOCKED, rect, border_radius=8)
+        pygame.draw.rect(screen, PANEL_BORDER, rect, 1, border_radius=8)
+
+        if preview.width <= 0 or preview.height <= 0:
+            return
+
+        tile = max(6, min(rect.width // preview.width, rect.height // preview.height))
+        grid_width = tile * preview.width
+        grid_height = tile * preview.height
+        ox = rect.x + (rect.width - grid_width) // 2
+        oy = rect.y + (rect.height - grid_height) // 2
+
+        road_h = self._scaled_asset("road_h", self.road_h_img, tile)
+        road_v = self._scaled_asset("road_v", self.road_v_img, tile)
+
+        default_color = ROAD_CONTINUOUS if preview.continuous else ROAD_DISCRETE
+
+        for y_val in range(preview.height):
+            for x_val in range(preview.width):
+                cell = pygame.Rect(ox + x_val * tile, oy + y_val * tile, tile, tile)
+                point = (x_val, y_val)
+
+                if point not in preview.roads:
+                    pygame.draw.rect(screen, BLOCKED, cell)
+                    continue
+
+                orientation = self._road_orientation(x_val, y_val)
+                node_type = preview.node_types.get(point, "")
+
+                if orientation == "horizontal" and road_h is not None:
+                    screen.blit(road_h, cell.topleft)
+                elif orientation == "vertical" and road_v is not None:
+                    screen.blit(road_v, cell.topleft)
+                else:
+                    pygame.draw.rect(screen, default_color, cell)
+
+                # Overlay explicit structure types so users can interpret generated roads.
+                if node_type == "road_two_lane":
+                    pygame.draw.rect(screen, ROAD_TWO_LANE, cell, 2)
+                elif node_type == "junction_turn_one_lane":
+                    pygame.draw.rect(screen, JUNCTION_ONE_LANE, cell, 2)
+                elif node_type == "junction_turn_two_lane":
+                    pygame.draw.rect(screen, JUNCTION_TWO_LANE, cell, 2)
+                elif node_type == "junction_t":
+                    pygame.draw.rect(screen, JUNCTION_T, cell, 2)
+                elif node_type == "junction_cross":
+                    pygame.draw.rect(screen, JUNCTION_CROSS, cell, 2)
+                elif node_type == "roundabout":
+                    pygame.draw.rect(screen, ROUNDABOUT_OUTER, cell, 2)
+                    pygame.draw.circle(screen, ROUNDABOUT_CENTER, cell.center, max(2, int(tile * 0.26)))
+
+        # Vehicle spawn/destination overlays.
+        car_sprite = self._scaled_asset("car", self.car_img, max(8, int(tile * 0.82)))
+        for vehicle in preview.vehicles:
+            spawn_rect = pygame.Rect(ox + vehicle.spawn[0] * tile, oy + vehicle.spawn[1] * tile, tile, tile)
+            dest_rect = pygame.Rect(ox + vehicle.destination[0] * tile, oy + vehicle.destination[1] * tile, tile, tile)
+
+            if car_sprite is not None:
+                car_rect = car_sprite.get_rect(center=spawn_rect.center)
+                screen.blit(car_sprite, car_rect)
+            else:
+                pygame.draw.circle(screen, (122, 221, 109), spawn_rect.center, max(2, tile // 4))
+
+            pygame.draw.rect(screen, DEST_COLOR, dest_rect.inflate(-max(2, tile // 3), -max(2, tile // 3)), 2)
+
+    def handle_events(self, events: List[pygame.event.Event]) -> str:
+        """
+        Use:
+        Process setup interactions and return next GUI state.
 
         Inputs:
         - events: Pygame event list for current frame.
@@ -403,38 +728,52 @@ class SetupScreen:
             if event.type != pygame.MOUSEBUTTONUP or event.button != 1:
                 continue
 
+            if self.preview_visible and self.preview_close_button.collidepoint(event.pos):
+                self.preview_visible = False
+                self.status_message = "Preview closed."
+                continue
+
             if self.back_button.collidepoint(event.pos):
                 return "MENU"
             if self.seed_button.collidepoint(event.pos):
                 self.seed = random.randint(0, 2**31 - 1)
                 self._rebuild_preview(f"Seed regenerated: {self.seed}")
                 continue
+
             if self.phase_minus.collidepoint(event.pos):
                 self._set_phase(self.phase - 1)
                 continue
             if self.phase_plus.collidepoint(event.pos):
                 self._set_phase(self.phase + 1)
                 continue
+
             if self.level_minus.collidepoint(event.pos):
                 self._set_level(self.level_index - 1)
                 continue
             if self.level_plus.collidepoint(event.pos):
                 self._set_level(self.level_index + 1)
                 continue
+
             if self.road_minus.collidepoint(event.pos):
                 self._set_road_density(-0.05)
                 continue
             if self.road_plus.collidepoint(event.pos):
-                self._set_road_density(+0.05)
+                self._set_road_density(0.05)
                 continue
+
             if self.struct_minus.collidepoint(event.pos):
                 self._set_structure_density(-0.05)
                 continue
             if self.struct_plus.collidepoint(event.pos):
-                self._set_structure_density(+0.05)
+                self._set_structure_density(0.05)
+                continue
+
+            if self.preview_button.collidepoint(event.pos):
+                self._rebuild_preview("Preview generated.")
+                self.preview_visible = True
                 continue
             if self.refresh_button.collidepoint(event.pos):
-                self._rebuild_preview("Preview refreshed.")
+                self._rebuild_preview("Preview data refreshed.")
                 continue
             if self.save_button.collidepoint(event.pos):
                 if self.run_ctx is not None:
@@ -451,159 +790,138 @@ class SetupScreen:
 
         return "SETUP"
 
-    def _draw_preview_map(self, screen: pygame.Surface, rect: pygame.Rect) -> None:
+    def _draw_control_row(self, screen: pygame.Surface, label: str, value: str, row_index: int) -> None:
         """
         Use:
-        Draw generated road grid plus preview vehicles inside preview panel.
+        Draw one labeled control row with centered value text.
 
         Inputs:
-        - screen: Target Pygame surface.
-        - rect: Preview panel rectangle.
+        - screen: Destination surface.
+        - label: Control label.
+        - value: Current value string.
+        - row_index: Zero-based row position.
 
         Output:
-        None. Draw operations are applied directly to `screen`.
+        None.
         """
-        preview = self.preview_map
-        inner = rect.inflate(-20, -140)
-        pygame.draw.rect(screen, BLOCKED, inner, border_radius=8)
-        pygame.draw.rect(screen, PANEL_BORDER, inner, 1, border_radius=8)
+        body = self._font(22)
+        value_font = self._font(30)
 
-        if preview.width <= 0 or preview.height <= 0:
-            return
-
-        tile = max(4, min(inner.width // preview.width, inner.height // preview.height))
-        grid_width = tile * preview.width
-        grid_height = tile * preview.height
-        ox = inner.x + (inner.width - grid_width) // 2
-        oy = inner.y + (inner.height - grid_height) // 2
-
-        default_road_color = ROAD_CONTINUOUS if preview.continuous else ROAD_DISCRETE
-
-        for y_val in range(preview.height):
-            for x_val in range(preview.width):
-                cell = pygame.Rect(ox + (x_val * tile), oy + (y_val * tile), tile, tile)
-                point = (x_val, y_val)
-                node_type = preview.node_types.get(point)
-                if point in preview.roads:
-                    road_color = default_road_color
-                    if node_type == "road_two_lane":
-                        road_color = ROAD_TWO_LANE
-                    elif node_type == "junction_turn_one_lane":
-                        road_color = JUNCTION_ONE_LANE
-                    elif node_type == "junction_turn_two_lane":
-                        road_color = JUNCTION_TWO_LANE
-                    elif node_type == "junction_t":
-                        road_color = JUNCTION_T
-                    elif node_type == "junction_cross":
-                        road_color = JUNCTION_CROSS
-
-                    pygame.draw.rect(screen, road_color, cell)
-                    if preview.continuous and tile >= 8:
-                        pygame.draw.line(
-                            screen,
-                            ROAD_CENTER_MARK,
-                            (cell.centerx, cell.y + 1),
-                            (cell.centerx, cell.bottom - 2),
-                            1,
-                        )
-                else:
-                    pygame.draw.rect(screen, BLOCKED, cell)
-
-                if node_type == "roundabout":
-                    pygame.draw.rect(screen, ROUNDABOUT_OUTER, cell, 2)
-                    radius = max(2, int(tile * 0.28))
-                    pygame.draw.circle(screen, ROUNDABOUT_CENTER, cell.center, radius)
-
-        # Draw vehicle spawn/destination markers on top of the road layout.
-        for vehicle in preview.vehicles:
-            spawn_cell = pygame.Rect(ox + (vehicle.spawn[0] * tile), oy + (vehicle.spawn[1] * tile), tile, tile)
-            dest_cell = pygame.Rect(ox + (vehicle.destination[0] * tile), oy + (vehicle.destination[1] * tile), tile, tile)
-            pygame.draw.circle(screen, SPAWN_COLOR, spawn_cell.center, max(2, tile // 4))
-            pygame.draw.rect(screen, DEST_COLOR, dest_cell.inflate(-(tile // 3), -(tile // 3)))
+        y_base = self.left_panel.y + 210 + (row_index * 78)
+        label_surface = body.render(label, True, ACCENT)
+        value_surface = value_font.render(value, True, FG)
+        label_pos = self._text_pos("control_row_label_offset", (self.left_panel.x + 22, y_base - 26))
+        value_center = self._text_pos("control_row_value_offset", (self.left_panel.x + 220, y_base - 2))
+        screen.blit(label_surface, label_pos)
+        value_rect = value_surface.get_rect(center=value_center)
+        screen.blit(value_surface, value_rect)
 
     def draw(self, screen: pygame.Surface) -> None:
         """
         Use:
-        Render setup controls, metadata, and map preview.
+        Render setup controls, summary details, and optionally the preview sub-window
+        when the user requests `GEN PREVIEW`.
 
         Inputs:
         - screen: Target Pygame surface.
 
         Output:
-        None. Draw operations are applied directly to `screen`.
+        None.
         """
         screen.fill(BG)
 
-        title_font = self._font(92)
-        body_font = self._font(24)
-        value_font = self._font(30)
+        title_font = self._font(96)
+        body_font = self._font(23)
         info_font = self._font(22)
-        status_font = self._font(22)
+        status_font = self._font(20)
 
-        title_text = title_font.render("SETUP", True, FG)
-        title_rect = title_text.get_rect(midtop=(self.screen_rect.centerx, 20))
-        screen.blit(title_text, title_rect)
+        title = title_font.render("SETUP", True, FG)
+        title_midtop = self._text_pos("title_offset", (self.screen_rect.centerx, 8))
+        screen.blit(title, title.get_rect(midtop=title_midtop))
 
         pygame.draw.rect(screen, PANEL_BG, self.left_panel, border_radius=12)
         pygame.draw.rect(screen, PANEL_BORDER, self.left_panel, 2, border_radius=12)
-        pygame.draw.rect(screen, PANEL_BG, self.preview_panel, border_radius=12)
-        pygame.draw.rect(screen, PANEL_BORDER, self.preview_panel, 2, border_radius=12)
 
-        # Left controls
+        pygame.draw.rect(screen, PANEL_BG, self.right_panel, border_radius=12)
+        pygame.draw.rect(screen, PANEL_BORDER, self.right_panel, 2, border_radius=12)
+
+        self._draw_gradient_button(screen, self.back_button, "BACK", 22)
+        self._draw_gradient_button(screen, self.seed_button, "REGENERATE SEED", 22)
+
         seed_label = body_font.render("SEED", True, ACCENT)
-        screen.blit(seed_label, self._text_pos("seed_label", (58, 188)))
-        seed_value = value_font.render(str(self.seed), True, FG)
-        screen.blit(seed_value, self._text_pos("seed_value", (58, 210)))
+        seed_value = self._font(28).render(str(self.seed), True, FG)
+        screen.blit(seed_label, self._text_pos("seed_label_offset", (self.left_panel.x + 22, self.left_panel.y + 78)))
+        screen.blit(seed_value, self._text_pos("seed_value_offset", (self.left_panel.x + 22, self.left_panel.y + 102)))
 
+        self._draw_control_row(screen, "PHASE", str(self.phase), 0)
+        self._draw_control_row(screen, "MAP LEVEL", f"{self.level_index + 1}/{map_level_count(self.phase)}", 1)
+        self._draw_control_row(screen, "ROAD DENSITY", f"{self.road_density:.2f}", 2)
+        self._draw_control_row(screen, "STRUCTURE DENSITY", f"{self.structure_density:.2f}", 3)
+
+        self._draw_gradient_button(screen, self.phase_minus, "-", 34)
+        self._draw_gradient_button(screen, self.phase_plus, "+", 34)
+        self._draw_gradient_button(screen, self.level_minus, "-", 34)
+        self._draw_gradient_button(screen, self.level_plus, "+", 34)
+        self._draw_gradient_button(screen, self.road_minus, "-", 34)
+        self._draw_gradient_button(screen, self.road_plus, "+", 34)
+        self._draw_gradient_button(screen, self.struct_minus, "-", 34)
+        self._draw_gradient_button(screen, self.struct_plus, "+", 34)
+
+        self._draw_gradient_button(screen, self.preview_button, "GEN PREVIEW", 22)
+        self._draw_gradient_button(screen, self.refresh_button, "REFRESH", 18)
+        self._draw_gradient_button(screen, self.save_button, "SAVE LOG", 18)
+
+        # Right panel summary only (preview is a dedicated sub-window).
+        info_x, info_y = self._text_pos("right_info_offset", (self.right_panel.x + 20, self.right_panel.y + 24))
+        info_gap = self._offset_int("right_info_gap", 34)
         phase_name = phase_spec(self.phase).name
-        phase_label = body_font.render("PHASE", True, ACCENT)
-        phase_value = value_font.render(str(self.phase), True, FG)
-        screen.blit(phase_label, self._text_pos("phase_label", (58, 304)))
-        screen.blit(phase_value, self._text_pos("phase_value", (174, 344)))
-
-        level_label = body_font.render("MAP LEVEL", True, ACCENT)
-        level_value = value_font.render(str(self.level_index + 1), True, FG)
-        level_total = info_font.render(f"/ {map_level_count(self.phase)}", True, ACCENT)
-        screen.blit(level_label, self._text_pos("level_label", (58, 384)))
-        screen.blit(level_value, self._text_pos("level_value", (174, 424)))
-        screen.blit(level_total, self._text_pos("level_total", (214, 432)))
-
-        road_label = body_font.render("ROAD DENSITY", True, ACCENT)
-        road_value = value_font.render(f"{self.road_density:.2f}", True, FG)
-        screen.blit(road_label, self._text_pos("road_label", (58, 464)))
-        screen.blit(road_value, self._text_pos("road_value", (174, 504)))
-
-        struct_label = body_font.render("STRUCTURE DENSITY", True, ACCENT)
-        struct_value = value_font.render(f"{self.structure_density:.2f}", True, FG)
-        screen.blit(struct_label, self._text_pos("struct_label", (58, 534)))
-        screen.blit(struct_value, self._text_pos("struct_value", (174, 574)))
-
-        self._draw_gradient_button(screen, self.back_button, "BACK", 24)
-        self._draw_gradient_button(screen, self.seed_button, "REGENERATE SEED", 24)
-        self._draw_gradient_button(screen, self.phase_minus, "-", 36)
-        self._draw_gradient_button(screen, self.phase_plus, "+", 36)
-        self._draw_gradient_button(screen, self.level_minus, "-", 36)
-        self._draw_gradient_button(screen, self.level_plus, "+", 36)
-        self._draw_gradient_button(screen, self.road_minus, "-", 36)
-        self._draw_gradient_button(screen, self.road_plus, "+", 36)
-        self._draw_gradient_button(screen, self.struct_minus, "-", 36)
-        self._draw_gradient_button(screen, self.struct_plus, "+", 36)
-        self._draw_gradient_button(screen, self.refresh_button, "REFRESH", 20)
-        self._draw_gradient_button(screen, self.save_button, "SAVE LOG", 20)
-
-        # Right information
-        info_x, info_y = self._text_pos("info_block", (self.preview_panel.x + 20, self.preview_panel.y + 16))
-        info_lines = [
-            f"Phase {self.phase} ({'Continuous' if self.preview_map.continuous else 'Discrete'})  |  Map {self.preview_map.width}x{self.preview_map.height}",
-            f"Vehicles: {len(self.preview_map.vehicles)}  |  VN {self.controllers.vn.input_size}  PN {self.controllers.pn.action_size}",
-            "Preview metrics are printed in terminal.",
+        lines = [
+            f"Phase {self.phase}: {phase_name}",
+            f"Mode: {'Continuous' if self.preview_map.continuous else 'Discrete'}",
+            f"Map size: {self.preview_map.width}x{self.preview_map.height}",
+            f"Preview vehicles: {len(self.preview_map.vehicles)}",
+            f"VN input size: {self.controllers.vn.input_size}",
+            f"PN action size: {self.controllers.pn.action_size}",
+            "Map preview opens in a sub-window via GEN PREVIEW.",
+            "Preview metrics are printed in terminal for logging.",
         ]
-        for line in info_lines:
-            rendered = info_font.render(line, True, FG)
-            screen.blit(rendered, (info_x, info_y))
-            info_y += 26
+        for line in lines:
+            text = info_font.render(line, True, FG)
+            screen.blit(text, (info_x, info_y))
+            info_y += info_gap
 
-        self._draw_preview_map(screen, self.preview_panel)
+        status = status_font.render(self.status_message, True, ACCENT)
+        status_pos = self._text_pos("status_offset", (self.left_panel.x + 18, self.left_panel.bottom - 34))
+        screen.blit(status, status_pos)
 
-        status_surface = status_font.render(self.status_message, True, ACCENT)
-        screen.blit(status_surface, self._text_pos("status", (self.left_panel.x + 18, self.left_panel.bottom - 36)))
+        if self.preview_visible:
+            overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 140))
+            screen.blit(overlay, (0, 0))
+
+            pygame.draw.rect(screen, PANEL_BG, self.preview_window, border_radius=14)
+            pygame.draw.rect(screen, PANEL_BORDER, self.preview_window, 2, border_radius=14)
+
+            head = self._font(30).render("MAP PREVIEW", True, FG)
+            preview_head_pos = self._text_pos(
+                "preview_header_offset",
+                (self.preview_window.x + 24, self.preview_window.y + 16),
+            )
+            screen.blit(head, preview_head_pos)
+            mode = self._font(20).render(
+                f"Seed {self.seed}  |  Phase {self.phase}  |  Level {self.level_index + 1}",
+                True,
+                ACCENT,
+            )
+            preview_mode_pos = self._text_pos(
+                "preview_subheader_offset",
+                (self.preview_window.x + 24, self.preview_window.y + 50),
+            )
+            screen.blit(mode, preview_mode_pos)
+
+            self._draw_gradient_button(screen, self.preview_close_button, "CLOSE", 18)
+
+            map_rect = self.preview_window.inflate(-40, -96)
+            map_rect.y += 28
+            map_rect.height -= 20
+            self._draw_preview_map(screen, map_rect)
