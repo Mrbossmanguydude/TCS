@@ -88,7 +88,7 @@ class PreparedControllers:
 def _norm(value: float, lower: float, upper: float) -> float:
     """
     Use:
-    Normalize a scalar into [0, 1].
+    Normalise a scalar into [0, 1].
 
     Inputs:
     - value: Raw numeric value.
@@ -96,7 +96,7 @@ def _norm(value: float, lower: float, upper: float) -> float:
     - upper: Upper bound.
 
     Output:
-    Normalized float in [0, 1].
+    Normalised float in [0, 1].
     """
     if upper <= lower:
         return 0.0
@@ -217,4 +217,5 @@ def prepare_vn_pn(config: Dict[str, Any], base_dir: Path) -> PreparedControllers
         previous_model_path=resolved_path,
     )
     return PreparedControllers(vn=vn, pn=pn)
+
 

@@ -113,7 +113,7 @@ def ensure_data_dirs(base_dir: Optional[Path] = None) -> Path:
 def resolve_seed(user_seed: Optional[int] = None) -> int:
     """
     Use:
-    Resolve active seed value for deterministic runtime behavior.
+    Resolve active seed value for deterministic runtime behaviour.
 
     Inputs:
     - user_seed: Optional fixed seed from caller/UI.
@@ -259,6 +259,70 @@ def create_run_record(db_path: Path, seed: int, config: Dict[str, Any], mode: st
     return run_id, created_at_iso
 
 
+def create_episode_record(
+    db_path: Path,
+    run_id: int,
+    mode: str,
+    seed: int,
+) -> Tuple[int, str]:
+    """
+    Use:
+    Insert one episode row for a run before metrics are logged.
+
+    Inputs:
+    - db_path: SQLite database path.
+    - run_id: Parent run primary key.
+    - mode: Mode label (eg: TRAIN).
+    - seed: Episode seed.
+
+    Output:
+    Tuple (episode_id, created_at_iso).
+    """
+    conn = sqlite3.connect(db_path)
+    created_at_iso = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO episodes (run_id, mode, seed, created_at) VALUES (?, ?, ?, ?)",
+        (int(run_id), mode, int(seed), created_at_iso),
+    )
+    conn.commit()
+    episode_id = int(cursor.lastrowid)
+    conn.close()
+    return episode_id, created_at_iso
+
+
+def insert_metric_record(
+    db_path: Path,
+    run_id: int,
+    episode_id: Optional[int],
+    key: str,
+    value: float,
+    step: Optional[int] = None,
+) -> None:
+    """
+    Use:
+    Insert one numeric metric row linked to run/episode.
+
+    Inputs:
+    - db_path: SQLite database path.
+    - run_id: Parent run primary key.
+    - episode_id: Optional parent episode id.
+    - key: Metric key label.
+    - value: Metric numeric value.
+    - step: Optional step/iteration index.
+
+    Output:
+    None.
+    """
+    conn = sqlite3.connect(db_path)
+    created_at_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO metrics (run_id, episode_id, key, value, step, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (int(run_id), episode_id, str(key), float(value), step, created_at_iso),
+    )
+    conn.commit()
+    conn.close()
+
+
 def write_rolling_config(base_dir: Path, config: Dict[str, Any]) -> Path:
     """
     Use:
@@ -308,10 +372,10 @@ def save_manual_config_log(
     return path
 
 
-def clear_log_artifacts(base_dir: Optional[Path] = None, clear_db: bool = True) -> None:
+def clear_log_artefacts(base_dir: Optional[Path] = None, clear_db: bool = True) -> None:
     """
     Use:
-    Remove existing log/config artifacts when starting a clean development cycle.
+    Remove existing log/config artefacts when starting a clean development cycle.
 
     Inputs:
     - base_dir: Optional project root override.
@@ -394,4 +458,5 @@ def start_train_run(ctx: RunContext) -> RunContext:
         created_at=datetime.fromisoformat(created_iso),
         config_snapshot_path=ctx.config_snapshot_path,
     )
+
 

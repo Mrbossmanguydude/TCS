@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pygame
+from src.gui.options_screen import OptionsScreen
 from src.gui.setup_screen import SetupScreen
 from src.gui.train_screen import TrainScreen
 from src.gui.ui_offsets import UI_OFFSETS
@@ -28,7 +29,7 @@ from src.utils.run_init import RunContext, init_run, start_train_run
 FPS = 60
 SCREEN_SIZE = (1200, 700)
 
-# Shared color palette.
+# Shared colour palette.
 BG = (53, 62, 67)
 FG = (235, 235, 235)
 ACCENT = (180, 180, 180)
@@ -44,8 +45,8 @@ UI_TEXT_SIZES: Dict[str, int] = {
     "screen_hint": 26,
 }
 
-# Centralized border colors so buttons remain visually distinct.
-MENU_BUTTON_COLORS: Dict[str, tuple[int, int, int]] = {
+# Centralised border colours so buttons remain visually distinct.
+MENU_BUTTON_COLOURS: Dict[str, tuple[int, int, int]] = {
     "TRAIN": (0, 71, 171),
     "EVALUATE": (128, 0, 128),
     "DEMO": (178, 34, 34),
@@ -61,45 +62,45 @@ MENU_BUTTON_COLORS: Dict[str, tuple[int, int, int]] = {
 
 def _vertical_gradient(
     size: tuple[int, int],
-    top_color: tuple[int, int, int],
-    bottom_color: tuple[int, int, int],
+    top_colour: tuple[int, int, int],
+    bottom_colour: tuple[int, int, int],
 ) -> pygame.Surface:
     """
     Build a vertical gradient surface.
 
     Args:
         size: Target (width, height) in pixels.
-        top_color: RGB color at y=0.
-        bottom_color: RGB color at y=height-1.
+        top_colour: RGB colour at y=0.
+        bottom_colour: RGB colour at y=height-1.
 
     Returns:
-        Surface containing a top-to-bottom color mix.
+        Surface containing a top-to-bottom colour mix.
     """
     width, height = size
     surface = pygame.Surface((width, height), pygame.SRCALPHA)
     for y_pos in range(height):
         blend = y_pos / max(1, height - 1)
-        red = int(top_color[0] * (1 - blend) + bottom_color[0] * blend)
-        green = int(top_color[1] * (1 - blend) + bottom_color[1] * blend)
-        blue = int(top_color[2] * (1 - blend) + bottom_color[2] * blend)
+        red = int(top_colour[0] * (1 - blend) + bottom_colour[0] * blend)
+        green = int(top_colour[1] * (1 - blend) + bottom_colour[1] * blend)
+        blue = int(top_colour[2] * (1 - blend) + bottom_colour[2] * blend)
         pygame.draw.line(surface, (red, green, blue), (0, y_pos), (width, y_pos))
     return surface
 
 
-def draw_text_center(
+def draw_text_centre(
     surface: pygame.Surface,
     font_path: Path | None,
     text: str,
-    center: tuple[int, int],
+    centre: tuple[int, int],
     font_size: int,
-    color: tuple[int, int, int],
+    colour: tuple[int, int, int],
 ) -> None:
     """
-    Render single-line text centered at the given point.
+    Render single-line text centred at the given point.
     """
     font = pygame.font.Font(font_path, font_size) if font_path else pygame.font.SysFont(None, font_size)
-    rendered = font.render(text, True, color)
-    rect = rendered.get_rect(center=center)
+    rendered = font.render(text, True, colour)
+    rect = rendered.get_rect(center=centre)
     surface.blit(rendered, rect)
 
 
@@ -109,7 +110,7 @@ def draw_text_center(
 
 class Button:
     """
-    Reusable clickable button with centered label rendering.
+    Reusable clickable button with centred label rendering.
     """
 
     def __init__(
@@ -120,16 +121,16 @@ class Button:
         height: int,
         text: str,
         text_size: int,
-        bordercolor: tuple[int, int, int] = HILITE,
-        textcolor: tuple[int, int, int] = FG,
+        bordercolour: tuple[int, int, int] = HILITE,
+        textcolour: tuple[int, int, int] = FG,
         thickness: int = 2,
         font_path: Path | None = None,
     ) -> None:
         self.rect = pygame.Rect(x, y, width, height)
         self.text = text
         self.text_size = text_size
-        self.textcolor = textcolor
-        self.bordercolor = bordercolor
+        self.textcolour = textcolour
+        self.bordercolour = bordercolour
         self.thickness = thickness
         self.font_path = font_path
 
@@ -145,7 +146,7 @@ class Button:
 
     def draw(self, screen: pygame.Surface) -> None:
         """
-        Draw gradient fill, rounded border, and centered label.
+        Draw gradient fill, rounded border, and centred label.
         """
         gradient = _vertical_gradient((self.rect.width, self.rect.height), (90, 95, 100), (50, 52, 55))
 
@@ -155,10 +156,10 @@ class Button:
         gradient.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(gradient, self.rect.topleft)
 
-        pygame.draw.rect(screen, self.bordercolor, self.rect, self.thickness, border_radius=radius)
+        pygame.draw.rect(screen, self.bordercolour, self.rect, self.thickness, border_radius=radius)
 
         font = pygame.font.Font(self.font_path, self.text_size) if self.font_path else pygame.font.SysFont(None, self.text_size)
-        text = font.render(self.text, True, self.textcolor)
+        text = font.render(self.text, True, self.textcolour)
         text_rect = text.get_rect(center=self.rect.center)
         shadow = font.render(self.text, True, (0, 0, 0))
         screen.blit(shadow, text_rect.move(1, 1))
@@ -173,8 +174,8 @@ class MainMenu:
     def __init__(self, screen_rect: pygame.Rect, font_path: Path | None = None) -> None:
         self.screen_rect = screen_rect
         self.font_path = font_path
-        self.bg_color = BG
-        self.line_color = FG
+        self.bg_colour = BG
+        self.line_colour = FG
         self.header_text = "MENU"
         self.header_rect, self.buttons = self._build_buttons()
 
@@ -183,17 +184,17 @@ class MainMenu:
         Create header placement and all menu buttons from `UI_OFFSETS`.
         """
         offsets = UI_OFFSETS.get("menu", {})
-        center_x = self.screen_rect.centerx
-        center_y = self.screen_rect.centery
+        centre_x = self.screen_rect.centerx
+        centre_y = self.screen_rect.centery
 
         btn_w, btn_h = offsets.get("button_size", (300, 108))
         gap_y = int(offsets.get("button_gap", 16))
-        top_y = center_y - int(btn_h * 1.75)
+        top_y = centre_y - int(btn_h * 1.75)
 
         header_w, header_h = offsets.get("header_size", (560, 170))
         hx_off, hy_off = offsets.get("header", (0, 0))
         header_rect = pygame.Rect(
-            center_x - header_w // 2 + hx_off,
+            centre_x - header_w // 2 + hx_off,
             top_y - header_h - 12 + hy_off,
             header_w,
             header_h,
@@ -203,7 +204,7 @@ class MainMenu:
 
         tx, ty = offsets.get("train", (0, 0))
         buttons["TRAIN"] = Button(
-            center_x - btn_w // 2 + tx,
+            centre_x - btn_w // 2 + tx,
             top_y + ty,
             btn_w,
             btn_h,
@@ -211,14 +212,14 @@ class MainMenu:
             int(offsets.get("train_text_size", UI_TEXT_SIZES["button_primary"])),
             thickness=2,
             font_path=self.font_path,
-            bordercolor=MENU_BUTTON_COLORS["TRAIN"],
-            textcolor=(230, 240, 255),
+            bordercolour=MENU_BUTTON_COLOURS["TRAIN"],
+            textcolour=(230, 240, 255),
         )
 
         grid_labels = ["EVALUATE", "DEMO", "REPLAYS", "SETUP", "OPTIONS", "CONTROLS"]
         start_y = top_y + btn_h + gap_y
         grid_w = btn_w * 2 + gap_y
-        left_x = center_x - (grid_w // 2)
+        left_x = centre_x - (grid_w // 2)
 
         for idx, key in enumerate(grid_labels):
             row = idx // 2
@@ -235,8 +236,8 @@ class MainMenu:
                 int(offsets.get("button_text_size", UI_TEXT_SIZES["button"])),
                 thickness=2,
                 font_path=self.font_path,
-                bordercolor=MENU_BUTTON_COLORS[key],
-                textcolor=(240, 240, 240),
+                bordercolour=MENU_BUTTON_COLOURS[key],
+                textcolour=(240, 240, 240),
             )
 
         ex, ey = offsets.get("exit", (0, 0))
@@ -272,10 +273,10 @@ class MainMenu:
         """
         Draw menu header text and menu buttons.
         """
-        screen.fill(self.bg_color)
+        screen.fill(self.bg_colour)
 
         font_size = int(UI_OFFSETS.get("menu", {}).get("header_text_size", UI_TEXT_SIZES["header"]))
-        draw_text_center(screen, self.font_path, self.header_text, self.header_rect.center, font_size, FG)
+        draw_text_centre(screen, self.font_path, self.header_text, self.header_rect.center, font_size, FG)
 
         for button in self.buttons.values():
             button.draw(screen)
@@ -323,6 +324,12 @@ def run_gui() -> None:
         run_ctx=run_ctx,
         ui_offsets=UI_OFFSETS.get("train", {}),
     )
+    options_screen = OptionsScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets=UI_OFFSETS.get("options", {}),
+    )
     state = "MENU"
     active_title = ""
     back_button = Button(
@@ -357,6 +364,7 @@ def run_gui() -> None:
                     run_ctx = start_train_run(run_ctx)
                     setup_screen.run_ctx = run_ctx
                     train_screen.run_ctx = run_ctx
+                    options_screen.run_ctx = run_ctx
                     train_screen.seed = int(run_ctx.seed)
                     train_screen.reset_environment(initial=True)
                     print("[TCS] TRAIN logging initialised.")
@@ -368,6 +376,11 @@ def run_gui() -> None:
             next_state = setup_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
+        elif state == "OPTIONS":
+            options_screen.draw(screen)
+            next_state = options_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
         elif state == "TRAIN":
             train_screen.draw(screen)
             next_state = train_screen.handle_events(events)
@@ -377,7 +390,7 @@ def run_gui() -> None:
             screen.fill(BG)
             back_button.draw(screen)
 
-            draw_text_center(
+            draw_text_centre(
                 screen,
                 font_path,
                 active_title,
@@ -385,7 +398,7 @@ def run_gui() -> None:
                 UI_TEXT_SIZES["screen_title"],
                 FG,
             )
-            draw_text_center(
+            draw_text_centre(
                 screen,
                 font_path,
                 "Press ESC or BACK to return to MENU",
@@ -406,3 +419,4 @@ def run_gui() -> None:
 
 if __name__ == "__main__":
     run_gui()
+

@@ -127,7 +127,7 @@ def map_level_count(phase: int) -> int:
 
 def _clamp_density(value: float, minimum: float, maximum: float) -> float:
     """
-    Normalize density parameter.
+    Normalise density parameter.
     """
     return max(minimum, min(maximum, float(value)))
 
@@ -317,17 +317,17 @@ def _overlay_arterials(
 
     verticals: List[int] = []
     horizontals: List[int] = []
-    center_v = max(1, min(width - 2, width // 2))
-    center_h = max(1, min(height - 2, height // 2))
+    centre_v = max(1, min(width - 2, width // 2))
+    centre_h = max(1, min(height - 2, height // 2))
 
     if density < 0.8:
         if rng.random() < 0.5:
-            verticals.append(center_v)
+            verticals.append(centre_v)
         else:
-            horizontals.append(center_h)
+            horizontals.append(centre_h)
     else:
-        verticals.append(center_v)
-        horizontals.append(center_h)
+        verticals.append(centre_v)
+        horizontals.append(centre_h)
 
     if density >= 0.95 and complexity >= 0.35 and width >= 12:
         verticals.append(max(1, min(width - 2, (width // 3) + rng.choice((-1, 0, 1)))))
@@ -442,7 +442,7 @@ def _place_roundabout(roads: Set[GridPoint], node: GridPoint, size: tuple[int, i
             if not _interior_bounds(xx, yy, width, height):
                 return False
 
-    # Ring shape: keep perimeter, block center.
+    # Ring shape: keep perimeter, block centre.
     for xx in range(cx - 1, cx + 2):
         for yy in range(cy - 1, cy + 2):
             if (xx, yy) != (cx, cy):
@@ -758,3 +758,4 @@ def generate_phase_map(
         structure_density=structure_density_norm,
         vehicles=vehicles,
     )
+

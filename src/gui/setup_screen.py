@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import pygame
 
 from src.utils.controller_prep import PreparedControllers, build_vn_feature_vector, prepare_vn_pn
+from src.utils.hold_repeat import HoldRepeatController
 from src.utils.map_generation import clamp_phase, generate_phase_map, map_level_count, phase_spec
 from src.utils.run_init import save_manual_config_log, write_rolling_config
 
@@ -30,8 +31,8 @@ JUNCTION_TWO_LANE = (104, 222, 205)
 JUNCTION_T = (122, 195, 122)
 JUNCTION_CROSS = (190, 138, 222)
 ROUNDABOUT_OUTER = (204, 172, 92)
-ROUNDABOUT_CENTER = (72, 78, 86)
-DEST_COLOR = (245, 122, 122)
+ROUNDABOUT_CENTRE = (72, 78, 86)
+DEST_COLOUR = (245, 122, 122)
 
 
 class SetupScreen:
@@ -91,6 +92,7 @@ class SetupScreen:
         self.status_message = "Setup ready. Click GEN PREVIEW to open map preview."
         self.preview_visible = False
         self.latest_feature_vector: List[float] = []
+        self._adjust_hold = HoldRepeatController()
 
         # Asset cache for image-based preview rendering.
         self.road_h_img: Optional[pygame.Surface] = None
@@ -416,18 +418,18 @@ class SetupScreen:
         rect: pygame.Rect,
         text: str,
         text_size: int,
-        border_color: tuple[int, int, int] = HILITE,
+        border_colour: tuple[int, int, int] = HILITE,
     ) -> None:
         """
         Use:
-        Draw a rounded gradient button with centered label text.
+        Draw a rounded gradient button with centred label text.
 
         Inputs:
         - screen: Destination surface.
         - rect: Button rectangle.
         - text: Label string.
         - text_size: Font size for button label.
-        - border_color: RGB outline color.
+        - border_colour: RGB outline colour.
 
         Output:
         None. Draws directly on `screen`.
@@ -444,7 +446,7 @@ class SetupScreen:
         pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=10)
         gradient.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(gradient, rect.topleft)
-        pygame.draw.rect(screen, border_color, rect, 2, border_radius=10)
+        pygame.draw.rect(screen, border_colour, rect, 2, border_radius=10)
 
         font = self._font(text_size)
         label = font.render(text, True, FG)
@@ -638,7 +640,7 @@ class SetupScreen:
         """
         Use:
         Render generated preview grid using image sprites for primary road segments
-        and vehicles, with color overlays for structures.
+        and vehicles, with colour overlays for structures.
 
         Inputs:
         - screen: Target surface.
@@ -663,7 +665,7 @@ class SetupScreen:
         road_h = self._scaled_asset("road_h", self.road_h_img, tile)
         road_v = self._scaled_asset("road_v", self.road_v_img, tile)
 
-        default_color = ROAD_CONTINUOUS if preview.continuous else ROAD_DISCRETE
+        default_colour = ROAD_CONTINUOUS if preview.continuous else ROAD_DISCRETE
 
         for y_val in range(preview.height):
             for x_val in range(preview.width):
@@ -682,12 +684,12 @@ class SetupScreen:
                 elif orientation == "vertical" and road_v is not None:
                     screen.blit(road_v, cell.topleft)
                 else:
-                    pygame.draw.rect(screen, default_color, cell)
+                    pygame.draw.rect(screen, default_colour, cell)
 
                 # Overlay explicit structure types so users can interpret generated roads.
-                if node_type == "road_two_lane":
-                    pygame.draw.rect(screen, ROAD_TWO_LANE, cell, 2)
-                elif node_type == "junction_turn_one_lane":
+                # `road_two_lane` intentionally has no special overlay so it reuses
+                # the same horizontal/vertical road sprites.
+                if node_type == "junction_turn_one_lane":
                     pygame.draw.rect(screen, JUNCTION_ONE_LANE, cell, 2)
                 elif node_type == "junction_turn_two_lane":
                     pygame.draw.rect(screen, JUNCTION_TWO_LANE, cell, 2)
@@ -697,7 +699,7 @@ class SetupScreen:
                     pygame.draw.rect(screen, JUNCTION_CROSS, cell, 2)
                 elif node_type == "roundabout":
                     pygame.draw.rect(screen, ROUNDABOUT_OUTER, cell, 2)
-                    pygame.draw.circle(screen, ROUNDABOUT_CENTER, cell.center, max(2, int(tile * 0.26)))
+                    pygame.draw.circle(screen, ROUNDABOUT_CENTRE, cell.center, max(2, int(tile * 0.26)))
 
         # Vehicle spawn/destination overlays.
         car_sprite = self._scaled_asset("car", self.car_img, max(8, int(tile * 0.82)))
@@ -711,7 +713,7 @@ class SetupScreen:
             else:
                 pygame.draw.circle(screen, (122, 221, 109), spawn_rect.center, max(2, tile // 4))
 
-            pygame.draw.rect(screen, DEST_COLOR, dest_rect.inflate(-max(2, tile // 3), -max(2, tile // 3)), 2)
+            pygame.draw.rect(screen, DEST_COLOUR, dest_rect.inflate(-max(2, tile // 3), -max(2, tile // 3)), 2)
 
     def handle_events(self, events: List[pygame.event.Event]) -> str:
         """
@@ -724,9 +726,38 @@ class SetupScreen:
         Output:
         Next state token (`SETUP` or `MENU`).
         """
+        self._adjust_hold.update()
+
         for event in events:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.phase_minus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_phase(self.phase - 1))
+                    continue
+                if self.phase_plus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_phase(self.phase + 1))
+                    continue
+                if self.level_minus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_level(self.level_index - 1))
+                    continue
+                if self.level_plus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_level(self.level_index + 1))
+                    continue
+                if self.road_minus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_road_density(-0.05))
+                    continue
+                if self.road_plus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_road_density(0.05))
+                    continue
+                if self.struct_minus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_structure_density(-0.05))
+                    continue
+                if self.struct_plus.collidepoint(event.pos):
+                    self._adjust_hold.begin(lambda: self._set_structure_density(0.05))
+                    continue
+
             if event.type != pygame.MOUSEBUTTONUP or event.button != 1:
                 continue
+            self._adjust_hold.stop()
 
             if self.preview_visible and self.preview_close_button.collidepoint(event.pos):
                 self.preview_visible = False
@@ -738,34 +769,6 @@ class SetupScreen:
             if self.seed_button.collidepoint(event.pos):
                 self.seed = random.randint(0, 2**31 - 1)
                 self._rebuild_preview(f"Seed regenerated: {self.seed}")
-                continue
-
-            if self.phase_minus.collidepoint(event.pos):
-                self._set_phase(self.phase - 1)
-                continue
-            if self.phase_plus.collidepoint(event.pos):
-                self._set_phase(self.phase + 1)
-                continue
-
-            if self.level_minus.collidepoint(event.pos):
-                self._set_level(self.level_index - 1)
-                continue
-            if self.level_plus.collidepoint(event.pos):
-                self._set_level(self.level_index + 1)
-                continue
-
-            if self.road_minus.collidepoint(event.pos):
-                self._set_road_density(-0.05)
-                continue
-            if self.road_plus.collidepoint(event.pos):
-                self._set_road_density(0.05)
-                continue
-
-            if self.struct_minus.collidepoint(event.pos):
-                self._set_structure_density(-0.05)
-                continue
-            if self.struct_plus.collidepoint(event.pos):
-                self._set_structure_density(0.05)
                 continue
 
             if self.preview_button.collidepoint(event.pos):
@@ -793,7 +796,7 @@ class SetupScreen:
     def _draw_control_row(self, screen: pygame.Surface, label: str, value: str, row_index: int) -> None:
         """
         Use:
-        Draw one labeled control row with centered value text.
+        Draw one labeled control row with centred value text.
 
         Inputs:
         - screen: Destination surface.
@@ -811,9 +814,9 @@ class SetupScreen:
         label_surface = body.render(label, True, ACCENT)
         value_surface = value_font.render(value, True, FG)
         label_pos = self._text_pos("control_row_label_offset", (self.left_panel.x + 22, y_base - 26))
-        value_center = self._text_pos("control_row_value_offset", (self.left_panel.x + 220, y_base - 2))
+        value_centre = self._text_pos("control_row_value_offset", (self.left_panel.x + 220, y_base - 2))
         screen.blit(label_surface, label_pos)
-        value_rect = value_surface.get_rect(center=value_center)
+        value_rect = value_surface.get_rect(center=value_centre)
         screen.blit(value_surface, value_rect)
 
     def draw(self, screen: pygame.Surface) -> None:
@@ -925,3 +928,4 @@ class SetupScreen:
             map_rect.y += 28
             map_rect.height -= 20
             self._draw_preview_map(screen, map_rect)
+

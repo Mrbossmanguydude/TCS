@@ -1,4 +1,4 @@
-# Python cache/build artifacts
+# Python cache/build artefacts
 __pycache__/
 *.py[cod]
 *.pyo
@@ -27,3 +27,4 @@ data/replays/**
 data/screenshots/**
 data/models/**
 data/maps/**
+
