@@ -32,7 +32,12 @@ JUNCTION_T = (122, 195, 122)
 JUNCTION_CROSS = (190, 138, 222)
 ROUNDABOUT_OUTER = (204, 172, 92)
 ROUNDABOUT_CENTRE = (72, 78, 86)
-DEST_COLOUR = (245, 122, 122)
+MAP_EMPTY_COLOUR = (34, 39, 44)
+MAP_GRID_COLOUR = (56, 63, 70)
+ROAD_COLOUR = (145, 162, 182)
+ROAD_STRUCTURE_LIGHT = (166, 166, 166)
+SPAWN_COLOUR = (112, 216, 104)
+DEST_COLOUR = (86, 198, 92)
 
 
 class SetupScreen:
@@ -542,46 +547,58 @@ class SetupScreen:
 
         write_rolling_config(self.run_ctx.base_dir, self.run_ctx.config)
 
+    def sync_from_run_context(self, rebuild: bool = True) -> None:
+        """
+        Use:
+        Pull seed/scenario values from shared runtime context into Setup state so
+        Setup reflects values changed elsewhere (for example in Train).
+
+        Inputs:
+        - rebuild: When True, regenerate preview if any synced value changed.
+
+        Output:
+        None.
+        """
+        if self.run_ctx is None:
+            return
+
+        scenario_cfg = self.run_ctx.config.get("scenario", {})
+        target_seed = int(self.run_ctx.config.get("seed", self.run_ctx.seed))
+        target_phase = clamp_phase(int(scenario_cfg.get("phase", max(0, self.phase - 1))) + 1)
+        target_level = int(scenario_cfg.get("level_index", self.level_index))
+        target_level = max(0, min(target_level, map_level_count(target_phase) - 1))
+        target_road_density = float(scenario_cfg.get("preview_road_density", self.road_density))
+        target_structure_density = float(scenario_cfg.get("preview_structure_density", self.structure_density))
+
+        changed = (
+            target_seed != int(self.seed)
+            or target_phase != int(self.phase)
+            or target_level != int(self.level_index)
+            or target_road_density != float(self.road_density)
+            or target_structure_density != float(self.structure_density)
+        )
+
+        self.seed = target_seed
+        self.phase = target_phase
+        self.level_index = target_level
+        self.road_density = target_road_density
+        self.structure_density = target_structure_density
+
+        if rebuild and changed:
+            self._rebuild_preview("Setup synchronised from runtime config.")
+
     def _print_preview_metrics(self, reason: str) -> None:
         """
         Use:
-        Print deterministic preview metrics to terminal for quick development checks.
+        Retained no-op hook for preview metrics logging.
 
         Inputs:
         - reason: Trigger label for this metrics emission.
 
         Output:
-        None. Writes one formatted log line to stdout.
+        None.
         """
-        preview = self.preview_map
-        road_cells = len(preview.roads)
-        total_cells = max(1, preview.width * preview.height)
-        coverage = (road_cells / total_cells) * 100.0
-        counts = preview.structure_counts
-
-        print(
-            "[SETUP PREVIEW]",
-            f"reason={reason}",
-            f"seed={self.seed}",
-            f"phase={self.phase}",
-            f"level={self.level_index + 1}/{map_level_count(self.phase)}",
-            f"size={preview.width}x{preview.height}",
-            f"mode={'continuous' if preview.continuous else 'discrete'}",
-            f"road_density={self.road_density:.2f}",
-            f"structure_density={self.structure_density:.2f}",
-            f"road_cells={road_cells}",
-            f"coverage={coverage:.1f}%",
-            f"roundabout={counts['roundabout']}",
-            f"j1={counts['junction_turn_one_lane']}",
-            f"j2={counts['junction_turn_two_lane']}",
-            f"jt={counts['junction_t']}",
-            f"jx={counts['junction_cross']}",
-            f"two_lane={counts['road_two_lane']}",
-            f"vehicles={len(preview.vehicles)}",
-            f"vn_in={self.controllers.vn.input_size}",
-            f"pn_actions={self.controllers.pn.action_size}",
-            f"prev_model={self.controllers.pn.uses_previous_model}",
-        )
+        _ = reason
 
     def _rebuild_preview(self, status: Optional[str] = None) -> None:
         """
@@ -609,7 +626,7 @@ class SetupScreen:
         if status:
             self.status_message = status
 
-    def _road_orientation(self, x_pos: int, y_pos: int) -> str:
+    def _road_orientation(self, x_pos: int, y_pos: int, node_type: str = "") -> str:
         """
         Use:
         Determine whether a road tile should prefer horizontal or vertical sprite
@@ -628,8 +645,17 @@ class SetupScreen:
         up = (x_pos, y_pos - 1) in roads
         down = (x_pos, y_pos + 1) in roads
 
-        has_h = left or right
-        has_v = up or down
+        horizontal_links = int(left) + int(right)
+        vertical_links = int(up) + int(down)
+
+        if node_type == "road_two_lane":
+            if horizontal_links >= vertical_links and horizontal_links > 0:
+                return "horizontal"
+            if vertical_links > 0:
+                return "vertical"
+
+        has_h = horizontal_links > 0
+        has_v = vertical_links > 0
         if has_h and not has_v:
             return "horizontal"
         if has_v and not has_h:
@@ -650,60 +676,71 @@ class SetupScreen:
         None.
         """
         preview = self.preview_map
-        pygame.draw.rect(screen, BLOCKED, rect, border_radius=8)
+        pygame.draw.rect(screen, MAP_EMPTY_COLOUR, rect, border_radius=8)
         pygame.draw.rect(screen, PANEL_BORDER, rect, 1, border_radius=8)
 
         if preview.width <= 0 or preview.height <= 0:
             return
 
-        tile = max(6, min(rect.width // preview.width, rect.height // preview.height))
+        tile = max(4, min(rect.width // preview.width, rect.height // preview.height))
         grid_width = tile * preview.width
         grid_height = tile * preview.height
         ox = rect.x + (rect.width - grid_width) // 2
         oy = rect.y + (rect.height - grid_height) // 2
 
-        road_h = self._scaled_asset("road_h", self.road_h_img, tile)
-        road_v = self._scaled_asset("road_v", self.road_v_img, tile)
+        road_h_cache: Dict[tuple[int, int], pygame.Surface] = {}
+        road_v_cache: Dict[tuple[int, int], pygame.Surface] = {}
+        car_sprite = self._scaled_asset("car", self.car_img, max(8, int(tile * 0.80)))
 
-        default_colour = ROAD_CONTINUOUS if preview.continuous else ROAD_DISCRETE
+        structure_fill_types = {
+            "junction_turn_one_lane",
+            "junction_turn_two_lane",
+            "junction_t",
+            "junction_cross",
+            "junction_centre",
+            "road_turn",
+        }
+
+        def _blit_scaled(
+            image: Optional[pygame.Surface],
+            cache: Dict[tuple[int, int], pygame.Surface],
+            cell_rect: pygame.Rect,
+        ) -> bool:
+            if image is None:
+                return False
+            key = (max(1, cell_rect.width), max(1, cell_rect.height))
+            sprite = cache.get(key)
+            if sprite is None:
+                sprite = pygame.transform.smoothscale(image, key)
+                cache[key] = sprite
+            screen.blit(sprite, cell_rect.topleft)
+            return True
 
         for y_val in range(preview.height):
             for x_val in range(preview.width):
                 cell = pygame.Rect(ox + x_val * tile, oy + y_val * tile, tile, tile)
                 point = (x_val, y_val)
+                node_type = preview.node_types.get(point, "")
+                pygame.draw.rect(screen, MAP_EMPTY_COLOUR, cell)
+                pygame.draw.rect(screen, MAP_GRID_COLOUR, cell, 1)
 
                 if point not in preview.roads:
-                    pygame.draw.rect(screen, BLOCKED, cell)
                     continue
 
-                orientation = self._road_orientation(x_val, y_val)
-                node_type = preview.node_types.get(point, "")
-
-                if orientation == "horizontal" and road_h is not None:
-                    screen.blit(road_h, cell.topleft)
-                elif orientation == "vertical" and road_v is not None:
-                    screen.blit(road_v, cell.topleft)
+                orientation = self._road_orientation(x_val, y_val, node_type=node_type)
+                if node_type in structure_fill_types or orientation == "mixed":
+                    pygame.draw.rect(screen, ROAD_STRUCTURE_LIGHT, cell)
+                elif orientation == "horizontal":
+                    pygame.draw.rect(screen, ROAD_COLOUR, cell)
+                    _blit_scaled(self.road_h_img, road_h_cache, cell)
+                elif orientation == "vertical":
+                    pygame.draw.rect(screen, ROAD_COLOUR, cell)
+                    _blit_scaled(self.road_v_img, road_v_cache, cell)
                 else:
-                    pygame.draw.rect(screen, default_colour, cell)
+                    pygame.draw.rect(screen, ROAD_COLOUR, cell)
 
-                # Overlay explicit structure types so users can interpret generated roads.
-                # `road_two_lane` intentionally has no special overlay so it reuses
-                # the same horizontal/vertical road sprites.
-                if node_type == "junction_turn_one_lane":
-                    pygame.draw.rect(screen, JUNCTION_ONE_LANE, cell, 2)
-                elif node_type == "junction_turn_two_lane":
-                    pygame.draw.rect(screen, JUNCTION_TWO_LANE, cell, 2)
-                elif node_type == "junction_t":
-                    pygame.draw.rect(screen, JUNCTION_T, cell, 2)
-                elif node_type == "junction_cross":
-                    pygame.draw.rect(screen, JUNCTION_CROSS, cell, 2)
-                elif node_type == "roundabout":
-                    pygame.draw.rect(screen, ROUNDABOUT_OUTER, cell, 2)
-                    pygame.draw.circle(screen, ROUNDABOUT_CENTRE, cell.center, max(2, int(tile * 0.26)))
-
-        # Vehicle spawn/destination overlays.
-        car_sprite = self._scaled_asset("car", self.car_img, max(8, int(tile * 0.82)))
-        for vehicle in preview.vehicles:
+        # Vehicle spawn/destination overlays matching TRAIN preview style.
+        for destination_index, vehicle in enumerate(preview.vehicles, start=1):
             spawn_rect = pygame.Rect(ox + vehicle.spawn[0] * tile, oy + vehicle.spawn[1] * tile, tile, tile)
             dest_rect = pygame.Rect(ox + vehicle.destination[0] * tile, oy + vehicle.destination[1] * tile, tile, tile)
 
@@ -711,9 +748,13 @@ class SetupScreen:
                 car_rect = car_sprite.get_rect(center=spawn_rect.center)
                 screen.blit(car_sprite, car_rect)
             else:
-                pygame.draw.circle(screen, (122, 221, 109), spawn_rect.center, max(2, tile // 4))
+                pygame.draw.circle(screen, SPAWN_COLOUR, spawn_rect.center, max(2, tile // 4))
 
-            pygame.draw.rect(screen, DEST_COLOUR, dest_rect.inflate(-max(2, tile // 3), -max(2, tile // 3)), 2)
+            dest_radius = max(3, int(tile * 0.48))
+            pygame.draw.circle(screen, DEST_COLOUR, dest_rect.center, dest_radius)
+            pygame.draw.circle(screen, (26, 102, 32), dest_rect.center, dest_radius, 1)
+            label = self._font(max(8, int(tile * 0.50))).render(str(destination_index), True, (0, 0, 0))
+            screen.blit(label, label.get_rect(center=dest_rect.center))
 
     def handle_events(self, events: List[pygame.event.Event]) -> str:
         """

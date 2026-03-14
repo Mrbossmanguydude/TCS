@@ -130,6 +130,7 @@ class PPOController:
     - obs_dim: Observation feature count.
     - action_dim: Number of discrete actions.
     - config: Immutable PPO hyperparameter bundle.
+    - requested_device: Configured device token (`auto`, `cpu`, `cuda`).
     - device: Torch device used for tensors/model.
     - model: Actor-critic model instance.
     - optimiser: Adam optimiser for model parameters.
@@ -153,10 +154,18 @@ class PPOController:
         self.action_dim = int(action_dim)
         self.config = config
 
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        requested = str(device).lower() if device is not None else "auto"
+        if requested not in {"auto", "cpu", "cuda"}:
+            requested = "auto"
+        self.requested_device = requested
+
+        if requested == "auto":
+            resolved = "cuda" if torch.cuda.is_available() else "cpu"
+        elif requested == "cuda" and (not torch.cuda.is_available()):
+            resolved = "cpu"
         else:
-            self.device = torch.device(device)
+            resolved = requested
+        self.device = torch.device(resolved)
 
         self.model = _ActorCritic(self.obs_dim, self.action_dim, hidden_size=int(self.config.hidden_size)).to(self.device)
         self.optimiser = torch.optim.Adam(self.model.parameters(), lr=float(self.config.lr))

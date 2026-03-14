@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,8 +48,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "preview_road_density": 0.72,
         "preview_structure_density": 0.62,
     },
-    "options": {"fps_cap": 60, "overlays": True, "device": "auto"},
-    "train": {"gamma": 0.99, "clip_eps": 0.2, "batch_size": 2048},
+    "options": {"fps_cap": 60, "overlays": True, "device": "auto", "visualise_training": True},
+    "train": {
+        "gamma": 0.99,
+        "clip_eps": 0.2,
+        "batch_size": 2048,
+        "reward_collision_scale_p1": 1.0,
+        "reward_collision_scale_p2": 1.0,
+        "reward_collision_scale_p3": 1.0,
+        "reward_collision_scale_p4": 1.0,
+        "reward_collision_scale_p5": 1.0,
+        "reward_collision_scale_p6": 1.0,
+        "reward_progress_scale_p1": 1.0,
+        "reward_progress_scale_p2": 1.0,
+        "reward_progress_scale_p3": 1.0,
+        "reward_progress_scale_p4": 1.0,
+        "reward_progress_scale_p5": 1.0,
+        "reward_progress_scale_p6": 1.0,
+    },
 }
 
 
@@ -126,14 +143,35 @@ def resolve_seed(user_seed: Optional[int] = None) -> int:
     return random.randint(0, 2**31 - 1)
 
 
-def load_config(config_path: Optional[Path] = None, seed: int = 0) -> Dict[str, Any]:
+def _merge_defaults(target: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Use:
+    Recursively merge missing default keys into an existing config dictionary.
+
+    Inputs:
+    - target: Config loaded from disk or existing runtime payload.
+    - defaults: Default config structure.
+
+    Output:
+    Merged config dictionary with all required default keys present.
+    """
+    for key, value in defaults.items():
+        if key not in target:
+            target[key] = copy.deepcopy(value)
+            continue
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_defaults(target[key], value)
+    return target
+
+
+def load_config(config_path: Optional[Path] = None, seed: Optional[int] = None) -> Dict[str, Any]:
     """
     Use:
     Load configuration from JSON file or defaults and attach active seed.
 
     Inputs:
     - config_path: Optional JSON config path.
-    - seed: Seed value inserted into resulting config.
+    - seed: Optional explicit seed override inserted into resulting config.
 
     Output:
     Mutable configuration dictionary for runtime.
@@ -145,7 +183,15 @@ def load_config(config_path: Optional[Path] = None, seed: int = 0) -> Dict[str, 
         # Use JSON round-trip so nested defaults are copied, not referenced.
         config = json.loads(json.dumps(DEFAULT_CONFIG))
 
-    config["seed"] = int(seed)
+    config = _merge_defaults(config, DEFAULT_CONFIG)
+    if seed is not None:
+        config["seed"] = int(seed)
+    else:
+        existing_seed = config.get("seed")
+        if isinstance(existing_seed, (int, float)):
+            config["seed"] = int(existing_seed)
+        else:
+            config["seed"] = resolve_seed()
     return config
 
 
@@ -412,8 +458,16 @@ def init_run(user_seed: Optional[int] = None, config_path: Optional[Path] = None
     `RunContext` ready for GUI usage.
     """
     base_dir = ensure_data_dirs()
-    seed = resolve_seed(user_seed)
-    config = load_config(config_path, seed=seed)
+    resolved_config_path = config_path
+    if resolved_config_path is None:
+        rolling_config_path = base_dir / ROLLING_CONFIG_REL
+        if rolling_config_path.exists():
+            resolved_config_path = rolling_config_path
+
+    explicit_seed = int(user_seed) if user_seed is not None else None
+    config = load_config(resolved_config_path, seed=explicit_seed)
+    seed = int(config.get("seed", resolve_seed()))
+    config["seed"] = seed
 
     # Ensure randomness providers use the same startup seed.
     reseed_all(seed)

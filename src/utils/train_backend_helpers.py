@@ -117,26 +117,82 @@ def heading_from_vector(dx: float, dy: float, fallback: float = 0.0) -> float:
 
 def phase_reward_weights(phase: int) -> Dict[str, float]:
     """
-    Return phase-aware reward weights.
+    Return phase-aware reward weights tuned to curriculum goals.
 
-    Phases 1-4: collision avoidance dominates.
-    Phases 5-6: efficiency/progress gains higher relative importance.
+    Emphasis profile:
+    - Phase 1: routing/efficiency dominant.
+    - Phase 2: collision avoidance + congestion dominant, routing minor.
+    - Phase 3: balanced routing/collision/congestion.
+    - Phase 4: heavy routing emphasis.
+    - Phase 5: heavy routing + collision emphasis.
+    - Phase 6: near-equal emphasis across all components.
     """
-    if int(phase) in (5, 6):
-        return {
+    phase_id = max(1, min(6, int(phase)))
+    reward_table: Dict[int, Dict[str, float]] = {
+        1: {
+            "arrival_reward": 4.0,
+            "progress_reward": 0.42,
+            "idle_penalty": 0.010,
+            "wait_penalty": 0.018,
+            "collision_penalty": 4.0,
+        },
+        2: {
+            "arrival_reward": 1.0,
+            "progress_reward": 0.05,
+            "idle_penalty": 0.060,
+            "wait_penalty": 0.090,
+            "collision_penalty": 13.0,
+        },
+        3: {
+            "arrival_reward": 2.4,
+            "progress_reward": 0.22,
+            "idle_penalty": 0.042,
+            "wait_penalty": 0.048,
+            "collision_penalty": 9.0,
+        },
+        4: {
+            "arrival_reward": 4.2,
+            "progress_reward": 0.46,
+            "idle_penalty": 0.008,
+            "wait_penalty": 0.012,
+            "collision_penalty": 4.5,
+        },
+        5: {
             "arrival_reward": 3.2,
-            "progress_reward": 0.26,
-            "idle_penalty": 0.006,
-            "wait_penalty": 0.014,
-            "collision_penalty": 9.5 if int(phase) == 5 else 8.8,
-        }
-    return {
-        "arrival_reward": 1.4,
-        "progress_reward": 0.08,
-        "idle_penalty": 0.02,
-        "wait_penalty": 0.04,
-        "collision_penalty": 18.0 if int(phase) == 3 else 16.0,
+            "progress_reward": 0.28,
+            "idle_penalty": 0.020,
+            "wait_penalty": 0.030,
+            "collision_penalty": 11.0,
+        },
+        6: {
+            "arrival_reward": 2.8,
+            "progress_reward": 0.24,
+            "idle_penalty": 0.030,
+            "wait_penalty": 0.032,
+            "collision_penalty": 10.0,
+        },
     }
+    return dict(reward_table[phase_id])
+
+
+def phase_pass_thresholds(phase: int) -> tuple[float, float]:
+    """
+    Return phase-specific pass thresholds.
+
+    Output tuple:
+    - success threshold (minimum success_rate to pass),
+    - collision threshold (maximum collision_rate to pass).
+    """
+    phase_id = max(1, min(6, int(phase)))
+    threshold_table: Dict[int, tuple[float, float]] = {
+        1: (0.72, 0.14),  # Moderate
+        2: (0.84, 0.06),  # High
+        3: (0.86, 0.05),  # High
+        4: (0.60, 0.24),  # Low
+        5: (0.76, 0.12),  # Moderate
+        6: (0.92, 0.04),  # Much higher
+    }
+    return threshold_table[phase_id]
 
 
 def phase_step_limit(base_steps: int, phase: int, map_width: int, map_height: int) -> int:
@@ -183,7 +239,16 @@ def collision_loss_multiplier(phase: int) -> float:
     Outputs:
     - Returnvalue: Computed result returned to the caller.
     """
-    return 12.0 if int(phase) in (5, 6) else 18.0
+    phase_id = max(1, min(6, int(phase)))
+    multiplier_table: Dict[int, float] = {
+        1: 6.0,
+        2: 20.0,
+        3: 14.0,
+        4: 6.5,
+        5: 15.0,
+        6: 12.0,
+    }
+    return multiplier_table[phase_id]
 
 
 def road_neighbours(

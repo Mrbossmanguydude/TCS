@@ -18,7 +18,7 @@ from src.utils.hold_repeat import HoldRepeatController
 from src.utils.map_generation import PreviewVehicle, clamp_phase, generate_phase_map, map_level_count
 from src.utils.ppo_controller import PPOConfig, PPOController, PPOUpdateStats
 from src.utils.replay import save_episode_replay
-from src.utils.run_init import create_episode_record, insert_metric_record, reseed_all
+from src.utils.run_init import create_episode_record, insert_metric_record, reseed_all, write_rolling_config
 from src.utils.train_backend_helpers import (
     build_observation_batch,
     cell_centre,
@@ -26,6 +26,7 @@ from src.utils.train_backend_helpers import (
     heading_from_vector,
     is_driveable_position,
     manhattan_distance,
+    phase_pass_thresholds,
     phase_reward_weights,
     phase_step_limit,
     target_cell_from_action,
@@ -178,6 +179,8 @@ class TrainScreen:
         self._sim_accumulator_s = 0.0
         self._runtime_prev_t = 0.0
         self._max_steps_per_frame = 240
+        self._headless_max_steps_per_frame = 4000
+        self._headless_frame_budget_s = 0.012
         self.sim_speed = 1.0
         self._speed_hold = HoldRepeatController()
         self._arrow_speed_direction = 0
@@ -197,11 +200,15 @@ class TrainScreen:
         self._episode_rollouts: Dict[int, VehicleRollout] = {}
 
         train_cfg = run_ctx.config.get("train", {}) if run_ctx is not None else {}
+        options_cfg = run_ctx.config.get("options", {}) if run_ctx is not None else {}
         self.episodes_per_level = max(1, int(train_cfg.get("episodes_per_level", 3)))
         self.success_threshold = float(train_cfg.get("success_threshold", 0.72))
         self.collision_threshold = float(train_cfg.get("collision_threshold", 0.14))
         self.auto_training_delay_ms = max(0, int(train_cfg.get("auto_training_delay_ms", 240)))
         self.phase2_collision_setbacks = bool(train_cfg.get("phase2_collision_setbacks", False))
+        self.training_visualised = bool(options_cfg.get("visualise_training", True))
+        self.requested_device = str(options_cfg.get("device", "auto")).lower()
+        self.active_device = "cpu"
         self.reward_weights = phase_reward_weights(self.phase)
 
         self.preview_map = generate_phase_map(
@@ -297,6 +304,7 @@ class TrainScreen:
         load_w, load_h = self._size("load_network_button_size", (140, 44))
         reset_w, reset_h = self._size("reset_button_size", (300, 44))
         begin_w, begin_h = self._size("begin_button_size", (300, 44))
+        visualise_w, visualise_h = self._size("visualise_button_size", (300, 44))
         phase_minus_w, phase_minus_h = self._size(
             "phase_minus_button_size",
             self._size("phase_button_size", (52, 44)),
@@ -319,10 +327,11 @@ class TrainScreen:
         self.load_network_button = self._offset_rect("load_network_button", pygame.Rect(198, 150, load_w, load_h))
         self.reset_button = self._offset_rect("reset_button", pygame.Rect(50, 204, reset_w, reset_h))
         self.begin_button = self._offset_rect("begin_button", pygame.Rect(50, 258, begin_w, begin_h))
-        self.phase_minus_button = self._offset_rect("phase_minus_button", pygame.Rect(50, 322, phase_minus_w, phase_minus_h))
-        self.phase_plus_button = self._offset_rect("phase_plus_button", pygame.Rect(286, 322, phase_plus_w, phase_plus_h))
-        self.level_minus_button = self._offset_rect("level_minus_button", pygame.Rect(50, 380, level_minus_w, level_minus_h))
-        self.level_plus_button = self._offset_rect("level_plus_button", pygame.Rect(286, 380, level_plus_w, level_plus_h))
+        self.visualise_button = self._offset_rect("visualise_button", pygame.Rect(50, 312, visualise_w, visualise_h))
+        self.phase_minus_button = self._offset_rect("phase_minus_button", pygame.Rect(50, 372, phase_minus_w, phase_minus_h))
+        self.phase_plus_button = self._offset_rect("phase_plus_button", pygame.Rect(286, 372, phase_plus_w, phase_plus_h))
+        self.level_minus_button = self._offset_rect("level_minus_button", pygame.Rect(50, 430, level_minus_w, level_minus_h))
+        self.level_plus_button = self._offset_rect("level_plus_button", pygame.Rect(286, 430, level_plus_w, level_plus_h))
 
         self.left_panel = self._offset_rect("left_panel", pygame.Rect(34, 108, 304, self.screen_rect.height - 132))
         self.right_panel = self._offset_rect(
@@ -540,6 +549,72 @@ class TrainScreen:
             return "vertical"
         return "mixed"
 
+    def _requested_runtime_device(self) -> str:
+        """
+        Use:
+        Read requested device from runtime config (`auto`, `cpu`, `cuda`).
+
+        Inputs:
+        - None.
+
+        Output:
+        Normalised device token.
+        """
+        if self.run_ctx is None:
+            return "auto"
+        options_cfg = self.run_ctx.config.setdefault("options", {})
+        token = str(options_cfg.get("device", "auto")).lower().strip()
+        if token not in {"auto", "cpu", "cuda"}:
+            token = "auto"
+        return token
+
+    def _resolve_runtime_device(self) -> str:
+        """
+        Use:
+        Resolve effective torch device from requested config and hardware.
+
+        Inputs:
+        - None.
+
+        Output:
+        Resolved text (`cpu` or `cuda`).
+        """
+        requested = self._requested_runtime_device()
+        self.requested_device = requested
+        if requested == "cpu":
+            return "cpu"
+        try:
+            import torch  # type: ignore
+            has_cuda = bool(torch.cuda.is_available())
+        except Exception:
+            has_cuda = False
+
+        if requested == "cuda":
+            return "cuda" if has_cuda else "cpu"
+        return "cuda" if has_cuda else "cpu"
+
+    def _set_training_visualised(self, enabled: bool) -> None:
+        """
+        Use:
+        Update visualisation mode and persist it into runtime config.
+
+        Inputs:
+        - enabled: True to render training map/vehicles, False for headless loop.
+
+        Output:
+        None.
+        """
+        self.training_visualised = bool(enabled)
+        if not self.training_visualised:
+            self._speed_hold.stop()
+            self._arrow_speed_direction = 0
+            self._sim_accumulator_s = 0.0
+        if self.run_ctx is None:
+            return
+        options_cfg = self.run_ctx.config.setdefault("options", {})
+        options_cfg["visualise_training"] = bool(self.training_visualised)
+        write_rolling_config(self.run_ctx.base_dir, self.run_ctx.config)
+
     def _init_backend_bridge(self) -> None:
         """
         Use:
@@ -557,6 +632,7 @@ class TrainScreen:
         try:
             self.controllers = prepare_vn_pn(config=config, base_dir=base_dir)
             train_cfg = config.get("train", {})
+            resolved_device = self._resolve_runtime_device()
             ppo_cfg = PPOConfig(
                 gamma=float(train_cfg.get("gamma", 0.99)),
                 clip_eps=float(train_cfg.get("clip_eps", 0.2)),
@@ -570,9 +646,14 @@ class TrainScreen:
                 obs_dim=obs_dim,
                 action_dim=int(self.controllers.pn.action_size),
                 config=ppo_cfg,
+                device=resolved_device,
             )
+            self.active_device = str(self.ppo.device)
+            if self.requested_device == "cuda" and self.active_device != "cuda":
+                self.status_message = "CUDA unavailable, using CPU."
         except Exception as exc:
             self.ppo = None
+            self.active_device = "cpu"
             self.status_message = f"Backend init failed: {exc}"
 
     def _build_backend_preview_state(self) -> tuple[TrainEpisodeState, List[TrainEpisodeVehicle]]:
@@ -697,10 +778,43 @@ class TrainScreen:
         Output:
         None.
         """
-        self.reward_weights = phase_reward_weights(self.phase)
-        if self.run_ctx is not None:
-            train_cfg = self.run_ctx.config.setdefault("train", {})
-            train_cfg["reward_profile"] = dict(self.reward_weights)
+        base_weights = dict(phase_reward_weights(self.phase))
+        # Keep pass thresholds phase-specific so curriculum expectations match
+        # the intended difficulty profile at each phase.
+        self._sync_phase_thresholds()
+        if self.run_ctx is None:
+            self.reward_weights = base_weights
+            return
+
+        train_cfg = self.run_ctx.config.setdefault("train", {})
+        collision_key = f"reward_collision_scale_p{int(self.phase)}"
+        progress_key = f"reward_progress_scale_p{int(self.phase)}"
+        collision_scale = float(train_cfg.get(collision_key, 1.0))
+        progress_scale = float(train_cfg.get(progress_key, 1.0))
+
+        # Apply per-phase user scales so reward emphasis can be tuned in Options.
+        base_weights["collision_penalty"] = float(base_weights.get("collision_penalty", 0.0)) * max(0.0, collision_scale)
+        base_weights["progress_reward"] = float(base_weights.get("progress_reward", 0.0)) * max(0.0, progress_scale)
+
+        self.reward_weights = base_weights
+        train_cfg["reward_profile"] = dict(self.reward_weights)
+        train_cfg["active_success_threshold"] = float(self.success_threshold)
+        train_cfg["active_collision_threshold"] = float(self.collision_threshold)
+
+    def _sync_phase_thresholds(self) -> None:
+        """
+        Use:
+        Apply phase-specific pass thresholds for success and collision metrics.
+
+        Inputs:
+        - None.
+
+        Output:
+        None.
+        """
+        success_threshold, collision_threshold = phase_pass_thresholds(int(self.phase))
+        self.success_threshold = float(success_threshold)
+        self.collision_threshold = float(collision_threshold)
 
     def _effective_step_limit(self) -> int:
         """
@@ -723,6 +837,27 @@ class TrainScreen:
                 map_height=int(self.preview_map.height),
             )
         )
+
+    def _vehicle_has_arrived(self, vehicle: EpisodeVehicle) -> bool:
+        """
+        Use:
+        Resolve whether one vehicle has reached its destination tile.
+
+        Inputs:
+        - vehicle: Runtime episode vehicle.
+
+        Output:
+        Boolean arrival status for pass/metric logic.
+        """
+        destination = (int(vehicle.destination[0]), int(vehicle.destination[1]))
+        if not self.preview_map.continuous:
+            current = (int(vehicle.current[0]), int(vehicle.current[1]))
+            return current == destination
+
+        # Continuous motion may finish slightly off the exact cell centre,
+        # so use a small tolerance for arrival detection.
+        destination_centre = cell_centre(destination)
+        return world_distance(vehicle.position, destination_centre) <= 0.18
 
     def _apply_curriculum_env_config(self, phase: int, level_index: int) -> None:
         """
@@ -921,12 +1056,28 @@ class TrainScreen:
         """
         if self.run_ctx is None:
             return
+        # Keep TRAIN seed aligned with shared runtime context so Setup seed
+        # updates propagate without requiring screen re-instantiation.
+        self.seed = int(self.run_ctx.config.get("seed", self.run_ctx.seed))
+
+        scenario_cfg = self.run_ctx.config.get("scenario", {})
+        self.phase = clamp_phase(int(scenario_cfg.get("phase", max(0, self.phase - 1))) + 1)
+        max_level_index = max(0, map_level_count(self.phase) - 1)
+        self.level_index = max(0, min(int(scenario_cfg.get("level_index", self.level_index)), max_level_index))
+        self.road_density = float(scenario_cfg.get("preview_road_density", self.road_density))
+        self.structure_density = float(scenario_cfg.get("preview_structure_density", self.structure_density))
+
         train_cfg = self.run_ctx.config.get("train", {})
         self.episodes_per_level = max(1, int(train_cfg.get("episodes_per_level", self.episodes_per_level)))
-        self.success_threshold = max(0.40, min(1.00, float(train_cfg.get("success_threshold", self.success_threshold))))
-        self.collision_threshold = max(0.0, min(0.80, float(train_cfg.get("collision_threshold", self.collision_threshold))))
+        # Phase-specific thresholds are resolved in `_sync_phase_thresholds()`
+        # so the curriculum profile remains deterministic.
         self.auto_training_delay_ms = max(0, int(train_cfg.get("auto_training_delay_ms", self.auto_training_delay_ms)))
         self.phase2_collision_setbacks = bool(train_cfg.get("phase2_collision_setbacks", self.phase2_collision_setbacks))
+        options_cfg = self.run_ctx.config.get("options", {})
+        self.training_visualised = bool(options_cfg.get("visualise_training", self.training_visualised))
+        requested = self._requested_runtime_device()
+        if requested != self.requested_device:
+            self._init_backend_bridge()
 
     def _capture_replay_step(self) -> None:
         """
@@ -1102,10 +1253,11 @@ class TrainScreen:
 
         state = self.episode_state
         vehicle_count = max(1, len(state.vehicles))
-        arrivals = float(state.metrics.get("arrivals", 0.0))
+        arrivals = float(sum(1 for vehicle in state.vehicles if self._vehicle_has_arrived(vehicle)))
         collisions = float(state.metrics.get("collisions", 0.0))
         success_rate = arrivals / float(vehicle_count)
         collision_rate = collisions / float(max(1, vehicle_count * max(1, state.step_count)))
+        state.metrics["arrivals"] = float(arrivals)
         state.metrics["success_rate"] = float(success_rate)
         state.metrics["collision_rate"] = float(collision_rate)
 
@@ -1176,6 +1328,7 @@ class TrainScreen:
                     step=int(state.step_count),
                 )
             except Exception:
+                # Persistence failures should not block runtime progression.
                 pass
 
         replay_path = self._persist_episode_replay(state=state, passed=passed)
@@ -1192,7 +1345,8 @@ class TrainScreen:
         self.status_message = base_status
 
         if self.auto_continue_training and self.training_view and not self.completed_curriculum:
-            self._next_auto_start_ms = pygame.time.get_ticks() + int(self.auto_training_delay_ms)
+            delay_ms = 0 if (not self.training_visualised) else int(self.auto_training_delay_ms)
+            self._next_auto_start_ms = pygame.time.get_ticks() + delay_ms
 
     def _begin_training_session(self) -> None:
         """
@@ -1205,6 +1359,7 @@ class TrainScreen:
         Output:
         None.
         """
+        self._init_backend_bridge()
         self.training_view = True
         self.training_paused = False
         self._arrow_speed_direction = 0
@@ -1536,6 +1691,8 @@ class TrainScreen:
         Output:
         None.
         """
+        # Runtime-only controls and auto-continue trigger checks live here so
+        # setup-screen mode stays passive.
         if self.training_view:
             self._speed_hold.update()
             self._update_arrow_speed_hold()
@@ -1553,12 +1710,28 @@ class TrainScreen:
         now_t = time.perf_counter()
         self.episode_state.elapsed_seconds = max(0.0, now_t - self._episode_start_t)
 
+        # Keep runtime timestamps stable when the user is outside training view.
         if not self.training_view:
             self._runtime_prev_t = now_t
             return
 
         if self.training_paused:
             self._runtime_prev_t = now_t
+            return
+
+        if not self.training_visualised:
+            # Headless mode prioritises throughput: run as many steps as possible
+            # within this frame budget and skip render-timed throttling.
+            self._runtime_prev_t = now_t
+            started = time.perf_counter()
+            steps_done = 0
+            while self.episode_running and steps_done < int(self._headless_max_steps_per_frame):
+                self._run_training_step()
+                steps_done += 1
+                if (time.perf_counter() - started) >= float(self._headless_frame_budget_s):
+                    break
+            if not self.episode_running:
+                self._sim_accumulator_s = 0.0
             return
 
         if self._runtime_prev_t <= 0.0:
@@ -1574,6 +1747,7 @@ class TrainScreen:
         if self._sim_step_interval_s <= 0:
             return
 
+        # Convert accumulated scaled time into an integer step budget.
         steps_budget = int(self._sim_accumulator_s // self._sim_step_interval_s)
         if steps_budget <= 0:
             return
@@ -1687,7 +1861,7 @@ class TrainScreen:
             current = (int(vehicle.position[0]), int(vehicle.position[1]))
             vehicle.current = current
             destination = (int(vehicle.destination[0]), int(vehicle.destination[1]))
-            if current == destination:
+            if self._vehicle_has_arrived(vehicle):
                 continue
 
             observation = observations[idx] if idx < len(observations) else []
@@ -1713,6 +1887,8 @@ class TrainScreen:
                 )
             moved_this_step = False
             previous_position = (float(vehicle.position[0]), float(vehicle.position[1]))
+            # Integrate action -> movement update using continuous or discrete
+            # rules for the active phase.
             if next_cell is not None:
                 target_position = cell_centre(next_cell)
                 if self.preview_map.continuous:
@@ -1782,7 +1958,7 @@ class TrainScreen:
                 reward_weights.get("progress_reward", 0.0)
             )
             step_reward = progress_reward
-            if current_after == destination:
+            if self._vehicle_has_arrived(vehicle):
                 step_reward += float(reward_weights.get("arrival_reward", 0.0))
             else:
                 if action == 0:
@@ -1804,14 +1980,11 @@ class TrainScreen:
             for vehicle in state.vehicles
             if occupancy.get((int(vehicle.current[0]), int(vehicle.current[1])), 0) > 1
         }
+        # Apply collision loss per impacted vehicle for this step.
         for vehicle_id in collided_ids:
             step_rewards[vehicle_id] = step_rewards.get(vehicle_id, 0.0) - float(collision_penalty_weight)
 
-        arrivals = sum(
-            1
-            for vehicle in state.vehicles
-            if (int(vehicle.current[0]), int(vehicle.current[1])) == (int(vehicle.destination[0]), int(vehicle.destination[1]))
-        )
+        arrivals = sum(1 for vehicle in state.vehicles if self._vehicle_has_arrived(vehicle))
 
         state.metrics["collisions"] = float(state.metrics.get("collisions", 0.0) + step_collisions)
         state.metrics["arrivals"] = float(arrivals)
@@ -1823,8 +1996,10 @@ class TrainScreen:
         )
         state.metrics["avg_speed"] = float(moved_count) / float(total_vehicles)
         step_reward_total = float(sum(step_rewards.values()))
+        # Keep reward scale comparable across episodes with different vehicle counts.
         state.metrics["reward_sum"] = float(state.metrics.get("reward_sum", 0.0) + (step_reward_total / float(total_vehicles)))
         if self.phase == 2 and self.phase2_collision_setbacks and collided_ids:
+            # Optional phase-2 behaviour: collided vehicles return to spawn.
             for vehicle in state.vehicles:
                 if int(vehicle.vehicle_id) in collided_ids:
                     vehicle.current = (int(vehicle.spawn[0]), int(vehicle.spawn[1]))
@@ -1841,7 +2016,7 @@ class TrainScreen:
         # Record one rollout row per controlled vehicle for PPO update later.
         for vehicle_id, observation, action, log_prob, value in transition_rows:
             vehicle = next((item for item in state.vehicles if int(item.vehicle_id) == int(vehicle_id)), None)
-            arrived_now = bool(vehicle is not None and (int(vehicle.current[0]), int(vehicle.current[1])) == (int(vehicle.destination[0]), int(vehicle.destination[1])))
+            arrived_now = bool(vehicle is not None and self._vehicle_has_arrived(vehicle))
             done_flag = 1.0 if (episode_done or arrived_now) else 0.0
             self._record_rollout_step(
                 vehicle_id=vehicle_id,
@@ -1977,12 +2152,12 @@ class TrainScreen:
             if self.training_view:
                 # Runtime-only controls: speed, pause/resume, screenshot, replay save.
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_LEFT:
+                    if self.training_visualised and event.key == pygame.K_LEFT:
                         self._arrow_speed_direction = -1
                         self._arrow_speed_last_ms = pygame.time.get_ticks()
                         self._apply_speed_delta(-1, step=0.01)
                         continue
-                    if event.key == pygame.K_RIGHT:
+                    if self.training_visualised and event.key == pygame.K_RIGHT:
                         self._arrow_speed_direction = +1
                         self._arrow_speed_last_ms = pygame.time.get_ticks()
                         self._apply_speed_delta(+1, step=0.01)
@@ -1997,10 +2172,10 @@ class TrainScreen:
                         continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if self.speed_minus_button.collidepoint(event.pos):
+                    if self.training_visualised and self.speed_minus_button.collidepoint(event.pos):
                         self._speed_hold.begin(lambda: self._apply_speed_delta(-1, step=1.0))
                         continue
-                    if self.speed_plus_button.collidepoint(event.pos):
+                    if self.training_visualised and self.speed_plus_button.collidepoint(event.pos):
                         self._speed_hold.begin(lambda: self._apply_speed_delta(+1, step=1.0))
                         continue
 
@@ -2065,6 +2240,11 @@ class TrainScreen:
             if self.begin_button.collidepoint(event.pos):
                 self._begin_training_session()
                 continue
+            if self.visualise_button.collidepoint(event.pos):
+                self._set_training_visualised(not self.training_visualised)
+                mode = "ON" if self.training_visualised else "OFF (full throttle)"
+                self.status_message = f"Training visualisation set to {mode}."
+                continue
 
         return "TRAIN"
 
@@ -2102,12 +2282,14 @@ class TrainScreen:
             22,
             border_colour=(80, 180, 110) if self.training_paused else (220, 140, 92),
         )
-        self._draw_button(screen, self.speed_minus_button, "-", 28, border_colour=(95, 170, 200))
-        self._draw_button(screen, self.speed_plus_button, "+", 28, border_colour=(95, 170, 200))
+        speed_border = (95, 170, 200) if self.training_visualised else PANEL_BORDER
+        self._draw_button(screen, self.speed_minus_button, "-", 28, border_colour=speed_border)
+        self._draw_button(screen, self.speed_plus_button, "+", 28, border_colour=speed_border)
 
         pygame.draw.rect(screen, PANEL_BG, self.speed_label_rect, border_radius=10)
         pygame.draw.rect(screen, PANEL_BORDER, self.speed_label_rect, 2, border_radius=10)
-        speed_label = self._font(22).render(f"{self.sim_speed:.2f}x", True, FG)
+        speed_text = f"{self.sim_speed:.2f}x" if self.training_visualised else "MAX"
+        speed_label = self._font(22).render(speed_text, True, FG)
         screen.blit(speed_label, speed_label.get_rect(center=self.speed_label_rect.center))
 
         info_font = self._font(22)
@@ -2127,9 +2309,9 @@ class TrainScreen:
 
         if self.episode_state is not None:
             throughput = float(self.episode_state.metrics.get("throughput", 0.0))
-            success_rate = float(self.episode_state.metrics.get("success_rate", 0.0))
+            current_success_rate = float(self.episode_state.metrics.get("success_rate", 0.0))
             avg_speed = float(self.episode_state.metrics.get("avg_speed", 0.0))
-            success_flag = "YES" if success_rate >= 1.0 else "NO"
+            last_pass = "N/A" if self.last_summary is None else ("YES" if self.last_summary.passed else "NO")
             last_failure = (
                 "N/A"
                 if self.last_episode_failed is None
@@ -2141,15 +2323,10 @@ class TrainScreen:
                 f"Collisions: {self.episode_state.metrics['collisions']:.0f}",
                 f"Throughput: {throughput:.3f}",
                 f"Loss: {float(self.episode_state.metrics.get('loss', 0.0)):.4f}",
-                f"Episode success: {success_flag} ({success_rate:.2f})",
+                f"Current success rate: {current_success_rate:.2f}",
+                f"Last episode pass: {last_pass}",
                 f"Last episode failure: {last_failure}",
                 f"Avg speed: {avg_speed:.3f}",
-                f"Obs rows: {len(self.preview_obs_batch)}",
-                (
-                    f"Obs width: {len(self.preview_obs_batch[0])}"
-                    if self.preview_obs_batch
-                    else "Obs width: 0"
-                ),
                 (
                     f"Sample action (V1): {self.preview_actions[0]}"
                     if self.preview_actions
@@ -2163,7 +2340,16 @@ class TrainScreen:
 
         map_rect = self.right_panel.inflate(-26, -84)
         map_rect.y += 28
-        self._draw_map_preview(screen, map_rect)
+        if self.training_visualised:
+            self._draw_map_preview(screen, map_rect)
+        else:
+            pygame.draw.rect(screen, MAP_EMPTY_COLOUR, map_rect, border_radius=8)
+            pygame.draw.rect(screen, PANEL_BORDER, map_rect, 1, border_radius=8)
+            headless_font = self._font(26)
+            line_1 = headless_font.render("VISUALISATION OFF", True, FG)
+            line_2 = self._font(21).render("Headless training running at maximum throughput.", True, ACCENT)
+            screen.blit(line_1, line_1.get_rect(center=(map_rect.centerx, map_rect.centery - 16)))
+            screen.blit(line_2, line_2.get_rect(center=(map_rect.centerx, map_rect.centery + 18)))
 
         phase_line = self._font(21).render(
             f"Phase {self.phase} | Level {self.level_index + 1}/{max(1, map_level_count(self.phase))}",
@@ -2216,6 +2402,13 @@ class TrainScreen:
         self._draw_button(screen, self.level_minus_button, "-", 34, border_colour=(95, 170, 200))
         self._draw_button(screen, self.level_plus_button, "+", 34, border_colour=(95, 170, 200))
         self._draw_button(screen, self.begin_button, "BEGIN TRAINING", 22)
+        self._draw_button(
+            screen,
+            self.visualise_button,
+            f"VISUALISE TRAINING: {'ON' if self.training_visualised else 'OFF'}",
+            19,
+            border_colour=(95, 170, 200) if self.training_visualised else PANEL_BORDER,
+        )
 
         phase_font = self._font(24)
         phase_text = phase_font.render(f"START PHASE: {self.phase}", True, FG)
@@ -2252,12 +2445,6 @@ class TrainScreen:
                 f"Episode index: {self.episode_state.episode_index}",
                 f"Step count: {self.episode_state.step_count}",
                 f"Collisions: {self.episode_state.metrics['collisions']:.0f}",
-                f"Obs rows: {len(self.preview_obs_batch)}",
-                (
-                    f"Obs width: {len(self.preview_obs_batch[0])}"
-                    if self.preview_obs_batch
-                    else "Obs width: 0"
-                ),
                 (
                     f"Sample action (V1): {self.preview_actions[0]}"
                     if self.preview_actions
@@ -2275,4 +2462,3 @@ class TrainScreen:
 
         status = info_font.render(self.status_message, True, ACCENT)
         screen.blit(status, self._text_pos("status", (self.left_panel.x + 16, self.left_panel.bottom - 34)))
-

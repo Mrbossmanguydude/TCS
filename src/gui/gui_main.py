@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pygame
+from src.gui.baseline_demo_screen import BaselineDemoScreen
 from src.gui.options_screen import OptionsScreen
 from src.gui.setup_screen import SetupScreen
 from src.gui.train_screen import TrainScreen
@@ -298,7 +299,6 @@ def run_gui() -> None:
     None. Opens the GUI window and runs until exit.
     """
     run_ctx: RunContext = init_run()
-    print(f"[TCS] Startup ready (seed={run_ctx.seed}).")
 
     pygame.init()
 
@@ -319,6 +319,12 @@ def run_gui() -> None:
         ui_offsets=UI_OFFSETS.get("setup", {}),
     )
     train_screen = TrainScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets=UI_OFFSETS.get("train", {}),
+    )
+    demo_screen = BaselineDemoScreen(
         screen.get_rect(),
         font_path=font_path,
         run_ctx=run_ctx,
@@ -360,14 +366,35 @@ def run_gui() -> None:
             menu.draw(screen)
             if next_state != "MENU":
                 state = next_state
-                if state == "TRAIN" and run_ctx.run_id is None:
+                # Keep all screens on the same shared run context reference.
+                setup_screen.run_ctx = run_ctx
+                train_screen.run_ctx = run_ctx
+                demo_screen.run_ctx = run_ctx
+                options_screen.run_ctx = run_ctx
+                if state in {"TRAIN", "DEMO"} and run_ctx.run_id is None:
                     run_ctx = start_train_run(run_ctx)
+                    setup_screen.run_ctx = run_ctx
+                    train_screen.run_ctx = run_ctx
+                    demo_screen.run_ctx = run_ctx
+                    options_screen.run_ctx = run_ctx
+                if state == "SETUP":
+                    # Pull latest shared seed/scenario (including values changed in TRAIN).
+                    setup_screen.sync_from_run_context(rebuild=True)
+                if state == "TRAIN":
+                    # Always resync TRAIN seed/state from shared runtime context so
+                    # setup seed changes are reflected immediately on Train entry.
                     setup_screen.run_ctx = run_ctx
                     train_screen.run_ctx = run_ctx
                     options_screen.run_ctx = run_ctx
                     train_screen.seed = int(run_ctx.seed)
                     train_screen.reset_environment(initial=True)
-                    print("[TCS] TRAIN logging initialised.")
+                if state == "DEMO":
+                    # DEMO uses the same run-time settings as TRAIN, but inference only.
+                    setup_screen.run_ctx = run_ctx
+                    demo_screen.run_ctx = run_ctx
+                    options_screen.run_ctx = run_ctx
+                    demo_screen.seed = int(run_ctx.seed)
+                    demo_screen.reset_environment(initial=True)
                 active_title = state
                 if state == "QUIT":
                     running = False
@@ -384,6 +411,11 @@ def run_gui() -> None:
         elif state == "TRAIN":
             train_screen.draw(screen)
             next_state = train_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
+        elif state == "DEMO":
+            demo_screen.draw(screen)
+            next_state = demo_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
         else:

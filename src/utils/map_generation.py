@@ -9,11 +9,20 @@ Generation order:
 
 from __future__ import annotations
 
+# --------------------------------------------------------------------------- #
+# INITIALISATION / STARTUP MATERIAL                                           #
+# --------------------------------------------------------------------------- #
+
 from collections import deque
 from dataclasses import dataclass
+import math
 import random
 from typing import Dict, List, Set, Tuple
 
+
+# --------------------------------------------------------------------------- #
+# CONSTANTS AND SHARED TYPES                                                  #
+# --------------------------------------------------------------------------- #
 
 GridPoint = Tuple[int, int]
 
@@ -21,7 +30,17 @@ GridPoint = Tuple[int, int]
 @dataclass(frozen=True)
 class PhaseSpec:
     """
-    Curriculum phase generation profile.
+    Purpose:
+    Store immutable generation settings for one curriculum phase.
+
+    This configuration is intentionally compact and declarative so curriculum
+    complexity can be tuned without changing generation algorithms.
+
+    Attributes:
+    - phase_id: Numeric phase identifier (1..6).
+    - name: Human-readable phase name shown in UI/status text.
+    - continuous: Whether movement/rendering in this phase is continuous.
+    - map_levels: Ordered map sizes used as complexity levels for the phase.
     """
 
     phase_id: int
@@ -33,7 +52,30 @@ class PhaseSpec:
 @dataclass
 class GeneratedMap:
     """
-    Render-ready map payload for setup preview.
+    Purpose:
+    Bundle all generated map data needed by Setup and Train rendering and by
+    backend episode initialisation logic.
+
+    This object is the canonical hand-off payload between procedural generation
+    and every downstream consumer (preview rendering, reset logic, VN features,
+    and training episode state creation).
+
+    Attributes:
+    - width: Grid width in tiles.
+    - height: Grid height in tiles.
+    - roads: Set of driveable road grid nodes.
+    - node_types: Per-node road/structure type tags.
+    - structure_counts: Structure occurrence summary for UI metrics.
+    - phase: Phase used for generation.
+    - level_index: Complexity level index used for generation.
+    - level_size: Convenience size value for UI display.
+    - continuous: Whether this map is in continuous motion mode.
+    - roundabouts_enabled: Whether roundabout placement was enabled.
+    - tile_pixels: Suggested render tile size.
+    - vehicle_scale: Suggested vehicle sprite scale factor.
+    - road_density: Effective road density used for this map.
+    - structure_density: Effective structure density used for this map.
+    - vehicles: Preview vehicle spawn/destination pairs for this map.
     """
 
     width: int
@@ -59,6 +101,9 @@ class PreviewVehicle:
     Use:
     Store preview-only vehicle routing points for setup visualisation.
 
+    The same spawn/destination tuples are also used to derive initial VN
+    feature vectors and to seed episode vehicle state in TRAIN resets.
+
     Inputs:
     - vehicle_id: Zero-based identifier.
     - spawn: Road cell where the vehicle starts.
@@ -76,12 +121,13 @@ class PreviewVehicle:
 
 
 PHASE_LIBRARY: Tuple[PhaseSpec, ...] = (
-    PhaseSpec(1, "Single-Vehicle Routing", False, (8, 10, 12, 14)),
-    PhaseSpec(2, "Multi-Vehicle Routing", False, (8, 10, 12, 14)),
-    PhaseSpec(3, "Multi-Vehicle With Setbacks", False, (8, 10, 12, 14)),
-    PhaseSpec(4, "Single-Vehicle Continuous", True, (10, 12, 14, 16)),
-    PhaseSpec(5, "Multi-Vehicle Continuous", True, (10, 12, 14, 16)),
-    PhaseSpec(6, "Final Continuous + Acceleration", True, (12, 14, 16, 18)),
+    PhaseSpec(1, "Single-Vehicle Routing", False, (16, 20, 24, 28)),
+    PhaseSpec(2, "Multi-Vehicle Routing", False, (16, 20, 24, 28)),
+    PhaseSpec(3, "Multi-Vehicle With Setbacks", False, (16, 20, 24, 28)),
+    # Continuous phases use larger maps to support wider lanes and roundabout spacing.
+    PhaseSpec(4, "Single-Vehicle Continuous", True, (24, 28, 32, 36)),
+    PhaseSpec(5, "Multi-Vehicle Continuous", True, (28, 32, 36, 40)),
+    PhaseSpec(6, "Final Continuous + Acceleration", True, (32, 36, 40, 44)),
 )
 
 STRUCTURE_KEYS: Tuple[str, ...] = (
@@ -93,6 +139,10 @@ STRUCTURE_KEYS: Tuple[str, ...] = (
     "road_two_lane",
 )
 
+
+# --------------------------------------------------------------------------- #
+# FUNCTIONS AND HELPERS                                                       #
+# --------------------------------------------------------------------------- #
 
 def clamp_phase(phase: int) -> int:
     """
@@ -127,16 +177,48 @@ def map_level_count(phase: int) -> int:
 
 def _clamp_density(value: float, minimum: float, maximum: float) -> float:
     """
-    Normalise density parameter.
+    normalise density parameter.
     """
     return max(minimum, min(maximum, float(value)))
 
 
 def _in_bounds(x_pos: int, y_pos: int, width: int, height: int) -> bool:
+    """
+    Type:
+    FUNCTION.
+
+    Purpose:
+    Check whether a coordinate lies inside inclusive map bounds.
+
+    Inputs:
+    - x_pos: Candidate x-coordinate.
+    - y_pos: Candidate y-coordinate.
+    - width: Map width in tiles.
+    - height: Map height in tiles.
+
+    Outputs:
+    - Returnvalue: `True` when `(x_pos, y_pos)` is inside the map rectangle.
+    """
     return 0 <= x_pos < width and 0 <= y_pos < height
 
 
 def _interior_bounds(x_pos: int, y_pos: int, width: int, height: int) -> bool:
+    """
+    Type:
+    FUNCTION.
+
+    Purpose:
+    Check whether a coordinate lies strictly inside the border wall ring.
+
+    Inputs:
+    - x_pos: Candidate x-coordinate.
+    - y_pos: Candidate y-coordinate.
+    - width: Map width in tiles.
+    - height: Map height in tiles.
+
+    Outputs:
+    - Returnvalue: `True` when node is inside the non-border interior area.
+    """
     return 1 <= x_pos < (width - 1) and 1 <= y_pos < (height - 1)
 
 
@@ -249,7 +331,8 @@ def _build_reverse_bfs_maze(
     visited: Set[GridPoint] = {target}
     all_cells = {(x_val, y_val) for x_val in odd_x for y_val in odd_y}
     density = _clamp_density(road_density, 0.35, 1.35)
-    target_ratio = max(0.22, min(0.78, (0.30 + (0.30 * complexity)) * density))
+    # Keep higher-density maps corridor-heavy instead of over-filling all cells.
+    target_ratio = max(0.18, min(0.62, (0.24 + (0.22 * complexity)) * (0.72 + (0.28 * density))))
     target_cells = max(1, int(round(len(all_cells) * target_ratio)))
 
     while queue:
@@ -271,6 +354,13 @@ def _build_reverse_bfs_maze(
         if rng.random() < 0.55:
             rng.shuffle(candidates)
         for nx, ny in candidates:
+            # Reject candidates that would immediately create crowded clusters.
+            neighbourhood = 0
+            for odx, ody in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if (nx + odx, ny + ody) in roads:
+                    neighbourhood += 1
+            if neighbourhood >= 3 and rng.random() < 0.8:
+                continue
             visited.add((nx, ny))
             queue.append((nx, ny))
             roads.add((nx, ny))
@@ -290,7 +380,7 @@ def _build_reverse_bfs_maze(
                     loop_candidates.append(wall)
 
     rng.shuffle(loop_candidates)
-    loop_ratio = (0.02 + (0.10 * complexity)) * density
+    loop_ratio = (0.01 + (0.06 * complexity)) * density
     extra_loops = int(round(len(loop_candidates) * max(0.0, min(0.18, loop_ratio))))
     for wall in loop_candidates[:extra_loops]:
         roads.add(wall)
@@ -317,29 +407,30 @@ def _overlay_arterials(
 
     verticals: List[int] = []
     horizontals: List[int] = []
-    centre_v = max(1, min(width - 2, width // 2))
-    centre_h = max(1, min(height - 2, height // 2))
+    center_v = max(1, min(width - 2, width // 2))
+    center_h = max(1, min(height - 2, height // 2))
 
     if density < 0.8:
         if rng.random() < 0.5:
-            verticals.append(centre_v)
+            verticals.append(center_v)
         else:
-            horizontals.append(centre_h)
+            horizontals.append(center_h)
     else:
-        verticals.append(centre_v)
-        horizontals.append(centre_h)
+        verticals.append(center_v)
+        horizontals.append(center_h)
 
-    if density >= 0.95 and complexity >= 0.35 and width >= 12:
+    if density >= 1.00 and complexity >= 0.45 and width >= 12:
         verticals.append(max(1, min(width - 2, (width // 3) + rng.choice((-1, 0, 1)))))
-    if density >= 0.95 and complexity >= 0.35 and height >= 12:
+    if density >= 1.00 and complexity >= 0.45 and height >= 12:
         horizontals.append(max(1, min(height - 2, (height // 3) + rng.choice((-1, 0, 1)))))
-    if density >= 1.15 and complexity >= 0.7 and width >= 14:
+    # Keep arterial overlays capped so complex maps remain maze-like.
+    if density >= 1.22 and complexity >= 0.78 and width >= 15:
         verticals.append(max(1, min(width - 2, ((2 * width) // 3) + rng.choice((-1, 0, 1)))))
-    if density >= 1.15 and complexity >= 0.7 and height >= 14:
+    if density >= 1.22 and complexity >= 0.78 and height >= 15:
         horizontals.append(max(1, min(height - 2, ((2 * height) // 3) + rng.choice((-1, 0, 1)))))
 
-    unique_verticals = sorted(set(verticals))
-    unique_horizontals = sorted(set(horizontals))
+    unique_verticals = sorted(set(verticals))[:2]
+    unique_horizontals = sorted(set(horizontals))[:2]
     for x_val in unique_verticals:
         _add_line(roads, x_val, 1, x_val, height - 2)
     for y_val in unique_horizontals:
@@ -406,54 +497,131 @@ def _straight_run_length(roads: Set[GridPoint], start: GridPoint, dx: int, dy: i
     return length
 
 
+def _roundabout_ring_nodes(center: GridPoint) -> List[GridPoint]:
+    """
+    Return the 8 perimeter cells of a 3x3 roundabout footprint.
+    """
+    cx, cy = center
+    return [
+        (cx - 1, cy - 1),
+        (cx, cy - 1),
+        (cx + 1, cy - 1),
+        (cx - 1, cy),
+        (cx + 1, cy),
+        (cx - 1, cy + 1),
+        (cx, cy + 1),
+        (cx + 1, cy + 1),
+    ]
+
+
+def _roundabout_clearance_distance(structure_density: float) -> float:
+    """
+    Density-scaled minimum Euclidean spacing between roundabout centers.
+
+    Low structure density keeps roundabouts farther apart (~6 tiles),
+    while high density allows tighter placement (~5 tiles).
+    """
+    density = _clamp_density(structure_density, 0.2, 1.5)
+    ratio = (density - 0.2) / 1.3
+    ratio = max(0.0, min(1.0, ratio))
+    return 6.0 - ratio
+
+
+def _roundabout_base_exit_length(structure_density: float) -> int:
+    """
+    Density-scaled base exit length for roundabout cardinal exits.
+
+    Low density: minimum 5 cells. High density: minimum 3 cells.
+    """
+    density = _clamp_density(structure_density, 0.2, 1.5)
+    ratio = (density - 0.2) / 1.3
+    ratio = max(0.0, min(1.0, ratio))
+    return int(round(5.0 - (2.0 * ratio)))
+
+
+def _structure_spacing_distance(structure_density: float, rng: random.Random) -> float:
+    """
+    Density-scaled spacing for non-roundabout structures.
+
+    Rules:
+    - Min density: base spacing 10 with random chance to allow as low as 7.
+    - Max density: fixed spacing 5 (no random reduction).
+    """
+    density = _clamp_density(structure_density, 0.2, 1.5)
+    if density >= 1.5:
+        return 5.0
+
+    ratio = (density - 0.2) / 1.3
+    ratio = max(0.0, min(1.0, ratio))
+    base_distance = 10.0 - (5.0 * ratio)
+
+    # Keep requested variance at lower densities only.
+    if rng.random() < 0.35:
+        base_distance = max(5.0, base_distance - float(rng.randint(1, 3)))
+    return max(5.0, base_distance)
+
+
 def _is_roundabout_candidate(
     roads: Set[GridPoint],
     node: GridPoint,
     size: tuple[int, int],
-    min_exit_len: int = 5,
+    exit_lengths: tuple[int, int, int, int],
 ) -> bool:
     """
-    Validate a roundabout candidate with exit-length and clearance rules.
+    Validate a roundabout candidate with per-direction exit-length bounds.
     """
     width, height = size
     cx, cy = node
     if not (2 <= cx <= (width - 3) and 2 <= cy <= (height - 3)):
         return False
 
-    # All cardinal exits must sustain minimum length.
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        if _straight_run_length(roads, node, dx, dy) < min_exit_len:
-            return False
-    return True
-
-
-def _place_roundabout(roads: Set[GridPoint], node: GridPoint, size: tuple[int, int], min_exit_len: int = 5) -> bool:
-    """
-    Place a simple 3x3 ring-style roundabout at the node.
-    """
-    if not _is_roundabout_candidate(roads, node, size, min_exit_len=min_exit_len):
-        return False
-
-    width, height = size
-    cx, cy = node
-
+    # Validate full 3x3 placement footprint is interior.
     for xx in range(cx - 1, cx + 2):
         for yy in range(cy - 1, cy + 2):
             if not _interior_bounds(xx, yy, width, height):
                 return False
 
-    # Ring shape: keep perimeter, block centre.
-    for xx in range(cx - 1, cx + 2):
-        for yy in range(cy - 1, cy + 2):
-            if (xx, yy) != (cx, cy):
-                roads.add((xx, yy))
+    # Validate each cardinal exit endpoint remains within interior bounds.
+    north_len, east_len, south_len, west_len = exit_lengths
+    exit_checks = (
+        (cx, cy - 1 - north_len),
+        (cx + 1 + east_len, cy),
+        (cx, cy + 1 + south_len),
+        (cx - 1 - west_len, cy),
+    )
+    for x_pos, y_pos in exit_checks:
+        if not _interior_bounds(x_pos, y_pos, width, height):
+            return False
+    return True
+
+
+def _place_roundabout(
+    roads: Set[GridPoint],
+    node: GridPoint,
+    size: tuple[int, int],
+    exit_lengths: tuple[int, int, int, int],
+) -> bool:
+    """
+    Place a 3x3 roundabout:
+    - centre cell is blocked,
+    - surrounding 8 cells become ring road,
+    - exits are extended in 4 cardinal directions.
+    """
+    if not _is_roundabout_candidate(roads, node, size, exit_lengths=exit_lengths):
+        return False
+
+    cx, cy = node
+
+    # Ring shape: keep perimeter as road and centre as obstacle.
+    for ring_cell in _roundabout_ring_nodes(node):
+        roads.add(ring_cell)
     roads.discard((cx, cy))
 
-    # Ensure exits from ring extend along cardinal directions.
-    _add_line(roads, cx, cy - 1, cx, cy - min_exit_len)
-    _add_line(roads, cx, cy + 1, cx, cy + min_exit_len)
-    _add_line(roads, cx - 1, cy, cx - min_exit_len, cy)
-    _add_line(roads, cx + 1, cy, cx + min_exit_len, cy)
+    north_len, east_len, south_len, west_len = exit_lengths
+    _add_line(roads, cx, cy - 1, cx, cy - 1 - north_len)
+    _add_line(roads, cx + 1, cy, cx + 1 + east_len, cy)
+    _add_line(roads, cx, cy + 1, cx, cy + 1 + south_len)
+    _add_line(roads, cx - 1, cy, cx - 1 - west_len, cy)
     return True
 
 
@@ -461,20 +629,57 @@ def _select_spaced_nodes(
     candidates: List[GridPoint],
     rng: random.Random,
     count: int,
-    min_distance: int,
+    min_distance: float,
+    blocked_nodes: List[GridPoint] | None = None,
 ) -> List[GridPoint]:
     """
-    Select nodes with Manhattan spacing.
+    Select nodes with Euclidean spacing.
     """
     pool = list(candidates)
     rng.shuffle(pool)
     chosen: List[GridPoint] = []
+    blocked = list(blocked_nodes or [])
     for node in pool:
-        if all(abs(node[0] - other[0]) + abs(node[1] - other[1]) >= min_distance for other in chosen):
+        if all(_euclidean(node, other) >= min_distance for other in chosen) and all(
+            _euclidean(node, other) >= min_distance for other in blocked
+        ):
             chosen.append(node)
             if len(chosen) >= count:
                 break
     return chosen
+
+
+def _tag_turn_and_junction_centres(
+    roads: Set[GridPoint],
+    node_types: Dict[GridPoint, str],
+    protected_centres: List[GridPoint] | None = None,
+    clearance_distance: float = 0.0,
+) -> None:
+    """
+    Add visual tags for:
+    - generic junction centres (degree >= 3),
+    - turning road tiles (degree == 2 and orthogonal).
+    """
+    graph = _build_graph(roads)
+    protected = list(protected_centres or [])
+    for node, neighbours in graph.items():
+        if node_types.get(node) == "roundabout_center":
+            continue
+        if protected and any(_euclidean(node, center) < clearance_distance for center in protected):
+            continue
+
+        if len(neighbours) >= 3:
+            node_types.setdefault(node, "junction_center")
+            continue
+
+        if len(neighbours) != 2:
+            continue
+
+        a_node, b_node = neighbours
+        # A corner turn has one horizontal and one vertical connection.
+        is_turn = (a_node[0] != b_node[0]) and (a_node[1] != b_node[1])
+        if is_turn:
+            node_types.setdefault(node, "road_turn")
 
 
 def _apply_structures(
@@ -490,7 +695,6 @@ def _apply_structures(
     Mark and place structure types based on road rules.
     """
     node_types: Dict[GridPoint, str] = {}
-    graph = _build_graph(roads)
     rng = random.Random((int(seed) * 19) + 5)
     density = _clamp_density(structure_density, 0.2, 1.5)
 
@@ -499,15 +703,63 @@ def _apply_structures(
         if cell in roads:
             node_types[cell] = "road_two_lane"
 
+    roundabout_centres: List[GridPoint] = []
+
+    # Roundabouts are generated first in continuous phases.
+    if continuous:
+        graph = _build_graph(roads)
+        round_candidates = [node for node, neigh in graph.items() if len(neigh) >= 2]
+        round_count = max(0, min(len(round_candidates), int(round((0.35 + (complexity * 1.4)) * density))))
+        if complexity >= 0.45 and round_candidates:
+            round_count = max(1, round_count)
+        round_spacing = _roundabout_clearance_distance(density)
+        base_exit_len = _roundabout_base_exit_length(density)
+
+        for node in _select_spaced_nodes(round_candidates, rng, round_count * 4, min_distance=round_spacing):
+            exit_lengths = (
+                base_exit_len + rng.randint(0, 2),
+                base_exit_len + rng.randint(0, 2),
+                base_exit_len + rng.randint(0, 2),
+                base_exit_len + rng.randint(0, 2),
+            )
+            if not _place_roundabout(roads, node, size, exit_lengths=exit_lengths):
+                continue
+
+            roundabout_centres.append(node)
+            node_types[node] = "roundabout_center"
+            for ring_cell in _roundabout_ring_nodes(node):
+                node_types[ring_cell] = "roundabout_ring"
+
+            if len(roundabout_centres) >= round_count:
+                break
+
+    graph = _build_graph(roads)
+    structure_spacing = _structure_spacing_distance(density, rng)
+    occupied_structure_nodes: List[GridPoint] = list(roundabout_centres)
+
     t_candidates = [node for node, neigh in graph.items() if len(neigh) == 3]
     cross_candidates = [node for node, neigh in graph.items() if len(neigh) >= 4]
 
     t_count = max(0, min(len(t_candidates), int(round(len(t_candidates) * (0.14 + (0.06 * complexity)) * density))))
     cross_count = max(0, min(len(cross_candidates), int(round(len(cross_candidates) * (0.18 + (0.08 * complexity)) * density))))
-    for node in _select_spaced_nodes(t_candidates, rng, t_count, min_distance=3):
+    for node in _select_spaced_nodes(
+        t_candidates,
+        rng,
+        t_count,
+        min_distance=structure_spacing,
+        blocked_nodes=occupied_structure_nodes,
+    ):
         node_types[node] = "junction_t"
-    for node in _select_spaced_nodes(cross_candidates, rng, cross_count, min_distance=4):
+        occupied_structure_nodes.append(node)
+    for node in _select_spaced_nodes(
+        cross_candidates,
+        rng,
+        cross_count,
+        min_distance=structure_spacing,
+        blocked_nodes=occupied_structure_nodes,
+    ):
         node_types[node] = "junction_cross"
+        occupied_structure_nodes.append(node)
 
     # Junctions tied to lane transitions.
     turn_two_candidates: List[GridPoint] = []
@@ -523,22 +775,31 @@ def _apply_structures(
 
     turn_two_count = max(0, min(len(turn_two_candidates), int(round((0.5 + (complexity * 2.2)) * density))))
     turn_one_count = max(0, min(len(turn_one_candidates), int(round((0.5 + (complexity * 2.0)) * density))))
-    for node in _select_spaced_nodes(turn_one_candidates, rng, turn_one_count, min_distance=4):
+    for node in _select_spaced_nodes(
+        turn_one_candidates,
+        rng,
+        turn_one_count,
+        min_distance=structure_spacing,
+        blocked_nodes=occupied_structure_nodes,
+    ):
         node_types[node] = "junction_turn_one_lane"
-    for node in _select_spaced_nodes(turn_two_candidates, rng, turn_two_count, min_distance=4):
+        occupied_structure_nodes.append(node)
+    for node in _select_spaced_nodes(
+        turn_two_candidates,
+        rng,
+        turn_two_count,
+        min_distance=structure_spacing,
+        blocked_nodes=occupied_structure_nodes,
+    ):
         node_types[node] = "junction_turn_two_lane"
+        occupied_structure_nodes.append(node)
 
-    # Roundabouts only in continuous phases.
-    if continuous:
-        graph = _build_graph(roads)
-        round_candidates = [node for node, neigh in graph.items() if len(neigh) >= 4]
-        round_count = max(0, min(len(round_candidates), int(round((0.4 + (complexity * 1.5)) * density))))
-        for node in _select_spaced_nodes(round_candidates, rng, round_count * 3, min_distance=6):
-            if _place_roundabout(roads, node, size, min_exit_len=5):
-                node_types[node] = "roundabout"
-                round_count -= 1
-                if round_count <= 0:
-                    break
+    _tag_turn_and_junction_centres(
+        roads,
+        node_types,
+        protected_centres=roundabout_centres,
+        clearance_distance=_roundabout_clearance_distance(density),
+    )
 
     return node_types
 
@@ -549,6 +810,9 @@ def _structure_counts(node_types: Dict[GridPoint, str]) -> Dict[str, int]:
     """
     counts = {key: 0 for key in STRUCTURE_KEYS}
     for value in node_types.values():
+        if value == "roundabout_center":
+            counts["roundabout"] += 1
+            continue
         if value in counts:
             counts[value] += 1
     return counts
@@ -591,6 +855,15 @@ def _manhattan(a_node: GridPoint, b_node: GridPoint) -> int:
     return abs(a_node[0] - b_node[0]) + abs(a_node[1] - b_node[1])
 
 
+def _euclidean(a_node: GridPoint, b_node: GridPoint) -> float:
+    """
+    Compute Euclidean distance between two grid cells.
+    """
+    dx = float(a_node[0] - b_node[0])
+    dy = float(a_node[1] - b_node[1])
+    return math.sqrt((dx * dx) + (dy * dy))
+
+
 def _farthest_node(graph: Dict[GridPoint, List[GridPoint]], start: GridPoint) -> GridPoint:
     """
     Use:
@@ -614,6 +887,30 @@ def _farthest_node(graph: Dict[GridPoint, List[GridPoint]], start: GridPoint) ->
                 seen.add(nxt)
                 queue.append(nxt)
     return farthest
+
+
+def _bfs_distance_map(graph: Dict[GridPoint, List[GridPoint]], start: GridPoint) -> Dict[GridPoint, int]:
+    """
+    Use:
+    Build a BFS distance map from a start road node.
+
+    Inputs:
+    - graph: Road adjacency map.
+    - start: BFS origin node.
+
+    Output:
+    Mapping of reachable node -> hop distance from `start`.
+    """
+    distances: Dict[GridPoint, int] = {start: 0}
+    queue: deque[GridPoint] = deque([start])
+    while queue:
+        node = queue.popleft()
+        base = distances[node]
+        for nxt in graph.get(node, []):
+            if nxt not in distances:
+                distances[nxt] = base + 1
+                queue.append(nxt)
+    return distances
 
 
 def _initialise_preview_vehicles(
@@ -648,6 +945,9 @@ def _initialise_preview_vehicles(
     rng = random.Random((int(seed) * 31) + (phase * 101) + (level_index * 17))
     count = min(len(nodes), _phase_preview_vehicle_count(phase, level_index))
     selected_spawns: List[GridPoint] = []
+    selected_destinations: List[GridPoint] = []
+    # Keep at least one empty tile between destination cells.
+    destination_min_gap = 2
 
     pool = list(nodes)
     rng.shuffle(pool)
@@ -657,15 +957,51 @@ def _initialise_preview_vehicles(
             if len(selected_spawns) >= count:
                 break
     if len(selected_spawns) < count:
-        selected_spawns.extend(pool[: count - len(selected_spawns)])
+        for node in pool:
+            if node not in selected_spawns:
+                selected_spawns.append(node)
+                if len(selected_spawns) >= count:
+                    break
 
     vehicles: List[PreviewVehicle] = []
     for vehicle_id, spawn in enumerate(selected_spawns):
-        destination = _farthest_node(graph, spawn)
-        if destination == spawn:
-            alternatives = [n for n in nodes if n != spawn]
-            if alternatives:
-                destination = rng.choice(alternatives)
+        # Destinations are chosen after map generation from driveable road nodes.
+        distance_map = _bfs_distance_map(graph, spawn)
+        candidates = [node for node in distance_map.keys() if node != spawn and node in roads]
+
+        # Prefer farther nodes first so preview routes are visibly meaningful.
+        candidates.sort(key=lambda node: distance_map[node], reverse=True)
+        if candidates:
+            # Shuffle equal-distance groups deterministically so multiple vehicles
+            # do not always pick the same branch when a tie exists.
+            grouped: Dict[int, List[GridPoint]] = {}
+            for node in candidates:
+                grouped.setdefault(distance_map[node], []).append(node)
+            candidates = []
+            for distance in sorted(grouped.keys(), reverse=True):
+                group_nodes = grouped[distance]
+                rng.shuffle(group_nodes)
+                candidates.extend(group_nodes)
+
+        destination = next(
+            (
+                node
+                for node in candidates
+                if all(_manhattan(node, existing) >= destination_min_gap for existing in selected_destinations)
+            ),
+            None,
+        )
+
+        if destination is None:
+            # Graceful fallback for very dense multi-vehicle previews on sparse maps:
+            # keep destination on-road even if spacing cannot be fully satisfied.
+            if candidates:
+                destination = candidates[0]
+            else:
+                fallback = [node for node in nodes if node != spawn and node in roads]
+                destination = rng.choice(fallback) if fallback else spawn
+
+        selected_destinations.append(destination)
         vehicles.append(
             PreviewVehicle(
                 vehicle_id=vehicle_id,
@@ -728,7 +1064,11 @@ def generate_phase_map(
     )
 
     roads = _largest_connected_roads(roads)
-    node_types = {node: typ for node, typ in node_types.items() if node in roads or typ == "roundabout"}
+    node_types = {
+        node: typ
+        for node, typ in node_types.items()
+        if node in roads or typ in ("roundabout_center", "roundabout_ring")
+    }
     structure_counts = _structure_counts(node_types)
     vehicles = _initialise_preview_vehicles(
         roads=roads,
@@ -758,4 +1098,3 @@ def generate_phase_map(
         structure_density=structure_density_norm,
         vehicles=vehicles,
     )
-

@@ -34,7 +34,7 @@ class OptionControl:
     - label: Human-readable row title.
     - section: Top-level config section (`scenario`, `options`, or `train`).
     - key: Config key inside the section.
-    - kind: Supported value type (`int`, `float`, or `bool`).
+    - kind: Supported value type (`int`, `float`, `bool`, or `device`).
     - minimum: Lower numeric bound for int/float controls.
     - maximum: Upper numeric bound for int/float controls.
     - step: Increment/decrement step for int/float controls.
@@ -52,6 +52,7 @@ class OptionControl:
 GENERAL_CONTROLS: Tuple[OptionControl, ...] = (
     OptionControl("FPS CAP", "options", "fps_cap", "int", 30, 165, 5),
     OptionControl("OVERLAYS", "options", "overlays", "bool", 0, 1, 1),
+    OptionControl("DEVICE", "options", "device", "device", 0, 2, 1),
     OptionControl("PHASE 2 SETBACKS", "train", "phase2_collision_setbacks", "bool", 0, 1, 1),
     OptionControl("EPISODE LENGTH", "scenario", "episode_len", "int", 60, 1500, 30),
     OptionControl("ROAD DENSITY", "scenario", "preview_road_density", "float", 0.35, 1.35, 0.05),
@@ -66,39 +67,46 @@ ADVANCED_CONTROLS: Tuple[OptionControl, ...] = (
     OptionControl("PASS SUCCESS >=", "train", "success_threshold", "float", 0.40, 1.00, 0.02),
     OptionControl("COLLISION MAX <=", "train", "collision_threshold", "float", 0.00, 0.50, 0.01),
     OptionControl("AUTO DELAY (MS)", "train", "auto_training_delay_ms", "int", 0, 1200, 50),
+    OptionControl("P1 COLL SCALE", "train", "reward_collision_scale_p1", "float", 0.20, 3.00, 0.05),
+    OptionControl("P2 COLL SCALE", "train", "reward_collision_scale_p2", "float", 0.20, 3.00, 0.05),
+    OptionControl("P3 COLL SCALE", "train", "reward_collision_scale_p3", "float", 0.20, 3.00, 0.05),
+    OptionControl("P4 COLL SCALE", "train", "reward_collision_scale_p4", "float", 0.20, 3.00, 0.05),
+    OptionControl("P5 COLL SCALE", "train", "reward_collision_scale_p5", "float", 0.20, 3.00, 0.05),
+    OptionControl("P6 COLL SCALE", "train", "reward_collision_scale_p6", "float", 0.20, 3.00, 0.05),
+    OptionControl("P1 PROG SCALE", "train", "reward_progress_scale_p1", "float", 0.20, 3.00, 0.05),
+    OptionControl("P2 PROG SCALE", "train", "reward_progress_scale_p2", "float", 0.20, 3.00, 0.05),
+    OptionControl("P3 PROG SCALE", "train", "reward_progress_scale_p3", "float", 0.20, 3.00, 0.05),
+    OptionControl("P4 PROG SCALE", "train", "reward_progress_scale_p4", "float", 0.20, 3.00, 0.05),
+    OptionControl("P5 PROG SCALE", "train", "reward_progress_scale_p5", "float", 0.20, 3.00, 0.05),
+    OptionControl("P6 PROG SCALE", "train", "reward_progress_scale_p6", "float", 0.20, 3.00, 0.05),
 )
 
-ADVANCED_PAGE_SPLIT_LABEL = "PHASE CAR MIN"
+MAX_ADVANCED_OPTIONS_PER_PAGE = 7
 
 
-def _build_advanced_pages() -> Tuple[Tuple[OptionControl, ...], Tuple[OptionControl, ...]]:
+def _build_advanced_pages() -> Tuple[Tuple[OptionControl, ...], ...]:
     """
     Use:
-    Split advanced controls into two pages where page 2 starts strictly after
-    `PHASE CAR MIN` when that label exists.
+    Split advanced controls into pages with bounded row count.
 
     Inputs:
     - None.
 
     Output:
-    Pair of advanced control tuples `(page_1, page_2)`.
+    Tuple of advanced-control pages with at most
+    `MAX_ADVANCED_OPTIONS_PER_PAGE` controls per page.
     """
     controls = list(ADVANCED_CONTROLS)
-    split_index = -1
-    for idx, control in enumerate(controls):
-        if control.label == ADVANCED_PAGE_SPLIT_LABEL or control.key == "phase_vehicle_min":
-            split_index = idx + 1
-            break
-
-    if split_index <= 0:
-        split_index = max(1, len(controls) // 2)
-
-    page_1 = tuple(controls[:split_index])
-    page_2 = tuple(controls[split_index:])
-    return page_1, page_2
+    page_size = max(1, int(MAX_ADVANCED_OPTIONS_PER_PAGE))
+    pages: List[Tuple[OptionControl, ...]] = []
+    for start in range(0, len(controls), page_size):
+        pages.append(tuple(controls[start : start + page_size]))
+    if not pages:
+        pages.append(tuple())
+    return tuple(pages)
 
 
-ADVANCED_CONTROL_PAGES: Tuple[Tuple[OptionControl, ...], Tuple[OptionControl, ...]] = _build_advanced_pages()
+ADVANCED_CONTROL_PAGES: Tuple[Tuple[OptionControl, ...], ...] = _build_advanced_pages()
 
 
 class OptionsScreen:
@@ -250,6 +258,8 @@ class OptionsScreen:
         defaults = {
             ("options", "fps_cap"): 60,
             ("options", "overlays"): True,
+            ("options", "device"): "auto",
+            ("options", "visualise_training"): True,
             ("scenario", "episode_len"): 300,
             ("scenario", "preview_road_density"): 0.72,
             ("scenario", "preview_structure_density"): 0.62,
@@ -261,6 +271,18 @@ class OptionsScreen:
             ("train", "collision_threshold"): 0.14,
             ("train", "phase2_collision_setbacks"): False,
             ("train", "auto_training_delay_ms"): 240,
+            ("train", "reward_collision_scale_p1"): 1.0,
+            ("train", "reward_collision_scale_p2"): 1.0,
+            ("train", "reward_collision_scale_p3"): 1.0,
+            ("train", "reward_collision_scale_p4"): 1.0,
+            ("train", "reward_collision_scale_p5"): 1.0,
+            ("train", "reward_collision_scale_p6"): 1.0,
+            ("train", "reward_progress_scale_p1"): 1.0,
+            ("train", "reward_progress_scale_p2"): 1.0,
+            ("train", "reward_progress_scale_p3"): 1.0,
+            ("train", "reward_progress_scale_p4"): 1.0,
+            ("train", "reward_progress_scale_p5"): 1.0,
+            ("train", "reward_progress_scale_p6"): 1.0,
         }
 
         for (section, key), value in defaults.items():
@@ -284,12 +306,14 @@ class OptionsScreen:
         """
         if self.active_tab == "general":
             return GENERAL_CONTROLS
+        if self.advanced_page_index < 0 or self.advanced_page_index >= len(ADVANCED_CONTROL_PAGES):
+            self.advanced_page_index = 0
         return ADVANCED_CONTROL_PAGES[self.advanced_page_index]
 
     def _toggle_advanced_page(self) -> None:
         """
         Use:
-        Switch between advanced page 1 and page 2.
+        Cycle to the next advanced page.
 
         Inputs:
         - None.
@@ -297,7 +321,8 @@ class OptionsScreen:
         Output:
         None.
         """
-        self.advanced_page_index = 1 - self.advanced_page_index
+        page_count = max(1, len(ADVANCED_CONTROL_PAGES))
+        self.advanced_page_index = (self.advanced_page_index + 1) % page_count
         self._hold_repeat.stop()
         self.status_message = f"Viewing ADVANCED page {self.advanced_page_index + 1}."
 
@@ -349,6 +374,13 @@ class OptionsScreen:
         """
         if control.kind == "bool":
             return "ON" if bool(value) else "OFF"
+        if control.kind == "device":
+            token = str(value).lower()
+            if token == "cuda":
+                return "GPU"
+            if token == "cpu":
+                return "CPU"
+            return "AUTO"
         if control.kind == "int":
             return str(int(value))
         if control.key == "gamma":
@@ -368,7 +400,16 @@ class OptionsScreen:
         None.
         """
         current = self._read_value(control)
-        if control.kind == "bool":
+        if control.kind == "device":
+            # Device cycles through auto -> cpu -> cuda using +/- buttons.
+            cycle = ["auto", "cpu", "cuda"]
+            token = str(current).lower()
+            if token not in cycle:
+                token = "auto"
+            idx = cycle.index(token)
+            step = 1 if int(direction) >= 0 else -1
+            next_value = cycle[(idx + step) % len(cycle)]
+        elif control.kind == "bool":
             next_value = not bool(current)
         elif control.kind == "int":
             raw = int(current) + int(control.step) * int(direction)
@@ -513,31 +554,35 @@ class OptionsScreen:
         button_h = self._offset_int("row_button_h", 42)
         label_x = self.left_panel.x + self._offset_int("row_label_x", 92)
         value_x = self.left_panel.x + self._offset_int("row_value_x", 284)
+        button_dx, button_dy = self._offset_xy("row_button_offset", (0, 0))
+        label_dx, label_dy = self._offset_xy("row_label_offset", (0, 0))
+        value_dx, value_dy = self._offset_xy("row_value_offset", (0, 0))
 
         self.row_controls_cache = []
         for row_index, control in enumerate(controls):
             y_pos = row_start_y + (row_index * row_gap)
-            minus_rect = pygame.Rect(minus_x, y_pos, button_w, button_h)
-            plus_rect = pygame.Rect(plus_x, y_pos, button_w, button_h)
+            minus_rect = pygame.Rect(minus_x + button_dx, y_pos + button_dy, button_w, button_h)
+            plus_rect = pygame.Rect(plus_x + button_dx, y_pos + button_dy, button_w, button_h)
             self.row_controls_cache.append((control, minus_rect, plus_rect))
 
             self._draw_button(screen, minus_rect, "-", button_font_size)
             self._draw_button(screen, plus_rect, "+", button_font_size)
 
             label = label_font.render(control.label, True, ACCENT)
-            screen.blit(label, (label_x, y_pos - 2))
+            screen.blit(label, (label_x + label_dx, y_pos - 2 + label_dy))
 
             raw_value = self._read_value(control)
             value_text = self._format_value(control, raw_value)
             value_surface = value_font.render(value_text, True, FG)
-            value_rect = value_surface.get_rect(center=(value_x, y_pos + (button_h // 2)))
+            value_rect = value_surface.get_rect(center=(value_x + value_dx, y_pos + (button_h // 2) + value_dy))
             screen.blit(value_surface, value_rect)
 
         info_font = self._font(22)
         details = [
             "GENERAL: run-time simulation + display options.",
             "ADVANCED: training progression thresholds/hyperparams.",
-            "Advanced uses two pages; press RIGHT to toggle page.",
+            "DEVICE cycles AUTO/CPU/GPU for PPO execution.",
+            f"Advanced uses {len(ADVANCED_CONTROL_PAGES)} pages; press RIGHT to cycle page.",
             "Hold + or - to accelerate value changes.",
             "All changes write directly to runtime_config.json.",
             f"Current tab: {self.active_tab.upper()}",
@@ -550,5 +595,12 @@ class OptionsScreen:
             y_info += 34
 
         status = self._font(20).render(self.status_message, True, ACCENT)
-        screen.blit(status, (self.left_panel.x + 18, self.left_panel.bottom - 34))
+        status_dx, status_dy = self._offset_xy("status", (0, 40))
+        screen.blit(
+            status,
+            (
+                self.left_panel.x + 18 + int(status_dx),
+                self.left_panel.bottom - 34 + int(status_dy),
+            ),
+        )
 
