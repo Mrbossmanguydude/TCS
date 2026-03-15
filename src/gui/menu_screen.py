@@ -1,3 +1,0 @@
-"""
-Menu screen module.
-"""
