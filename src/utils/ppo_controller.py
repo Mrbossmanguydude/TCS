@@ -13,6 +13,10 @@ from torch import nn
 from torch.distributions import Categorical
 
 
+# --------------------------------------------------------------------------- #
+# Configuration containers                                                    #
+# --------------------------------------------------------------------------- #
+
 @dataclass(frozen=True)
 class PPOConfig:
     """
@@ -65,6 +69,10 @@ class PPOUpdateStats:
     entropy: float
     clip_fraction: float
 
+
+# --------------------------------------------------------------------------- #
+# Model definition                                                            #
+# --------------------------------------------------------------------------- #
 
 class _ActorCritic(nn.Module):
     """
@@ -185,13 +193,18 @@ class PPOController:
         if not observations:
             return [], [], []
 
+        # The action path is always batch-based so GUI and headless modes share
+        # one consistent policy interface.
         obs_tensor = torch.tensor(observations, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             logits, values = self.model(obs_tensor)
             dist = Categorical(logits=logits)
             if deterministic:
+                # Deterministic mode is used by evaluation/demo style flows.
                 actions = torch.argmax(logits, dim=-1)
             else:
+                # Stochastic sampling is used during TRAIN to maintain policy
+                # exploration and gather useful rollout diversity.
                 actions = dist.sample()
             log_probs = dist.log_prob(actions)
 
@@ -267,6 +280,8 @@ class PPOController:
             return [], []
 
         n_steps = len(rewards)
+        # Pad any mismatched buffers so a partially-filled rollout does not
+        # crash GAE computation during episode finalisation.
         safe_values = list(values[:n_steps]) + [0.0] * max(0, n_steps - len(values))
         safe_dones = list(dones[:n_steps]) + [1.0] * max(0, n_steps - len(dones))
 
@@ -330,6 +345,8 @@ class PPOController:
         clip_frac_acc = 0.0
         updates = 0
 
+        # Multiple epochs over one rollout improve sample efficiency while the
+        # clipping term constrains destructive policy jumps.
         for _ in range(int(self.config.ppo_epochs)):
             permutation = torch.randperm(n_samples, device=self.device)
             for start in range(0, n_samples, minibatch_size):
@@ -345,6 +362,7 @@ class PPOController:
                 new_logp = dist.log_prob(act_b)
                 entropy = dist.entropy().mean()
 
+                # PPO ratio between new and behaviour policy probabilities.
                 ratio = torch.exp(new_logp - old_logp_b)
                 unclipped_obj = ratio * adv_b
                 clipped_obj = torch.clamp(
@@ -363,6 +381,8 @@ class PPOController:
 
                 self.optimiser.zero_grad(set_to_none=True)
                 loss.backward()
+                # Gradient clipping prevents rare rollout spikes from producing
+                # unstable weight updates.
                 nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.max_grad_norm))
                 self.optimiser.step()
 

@@ -14,6 +14,10 @@ from src.utils.hold_repeat import HoldRepeatController
 from src.utils.run_init import write_rolling_config
 
 
+# --------------------------------------------------------------------------- #
+# Theme constants                                                             #
+# --------------------------------------------------------------------------- #
+
 BG = (53, 62, 67)
 FG = (235, 235, 235)
 ACCENT = (180, 180, 180)
@@ -23,6 +27,10 @@ PANEL_BORDER = (78, 91, 99)
 TAB_ACTIVE = (90, 150, 220)
 TAB_INACTIVE = (70, 82, 95)
 
+
+# --------------------------------------------------------------------------- #
+# Option metadata definitions                                                 #
+# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class OptionControl:
@@ -83,6 +91,10 @@ ADVANCED_CONTROLS: Tuple[OptionControl, ...] = (
 
 MAX_ADVANCED_OPTIONS_PER_PAGE = 7
 
+
+# --------------------------------------------------------------------------- #
+# Advanced tab paging helpers                                                 #
+# --------------------------------------------------------------------------- #
 
 def _build_advanced_pages() -> Tuple[Tuple[OptionControl, ...], ...]:
     """
@@ -251,6 +263,8 @@ class OptionsScreen:
         if self.run_ctx is None:
             return
 
+        # The options screen owns default initialisation so each control always
+        # has a valid backing value, even when loading older config files.
         scenario = self.run_ctx.config.setdefault("scenario", {})
         options = self.run_ctx.config.setdefault("options", {})
         train = self.run_ctx.config.setdefault("train", {})

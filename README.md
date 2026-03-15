@@ -1,60 +1,190 @@
-# **TCS – Computer Science NEA Project**
+﻿# Traffic Control System (TCS)
 
-A proof-of-concept simulation testing whether a **single centralised neural network** can coordinate autonomous vehicles more efficiently than decentralised control.  
-Uses **curriculum-based reinforcement learning (PPO)** to minimise **congestion, collisions, and journey times** across **procedurally generated road networks**.
+Traffic Control System (TCS) is a Pygame-based simulation and training environment for centralised traffic control using PPO.
 
----
+The project provides:
+- A multi-screen GUI for setup, training, evaluation, replay, baseline demo, options, and controls.
+- Curriculum-based training across phases and map levels.
+- Network slot management (save/load/delete/rename).
+- Episode replay slot management with playback.
+- Runtime logging to SQLite and JSON exports.
 
-The goal is to make multiple agents—each capable of perceiving a state within the procedurally generated road network—work out a way to optimise their pathfinding and speed such that they minimise the factors above, while still getting as close as possible to the often unachievable optimum of simple individualistic pathfinding.
+## Current Versioning Style
 
-In this case, **simple individualistic pathfinding** is an even more abstract version of the initial simulation: each agent uses an optimal pathfinding algorithm at maximum speed, ignoring other agents and possible collisions. This provides the **theoretical upper bound** of how good the reward can be, and is shown as a metric to the user for evaluation purposes.
+Commits use a version label inside commit messages, for example:
+- `VERSION 2.3`
+- `VERSION 3.4`
+- `VERSION 3.5`
 
----
+This README includes commands to find and run specific versions.
 
-## **Training Approach**
+## Requirements
 
-For now, the network functions like a typical PPO system. The process roughly goes:
+- Python 3.11+ (recommended)
+- `pygame-ce`
+- `torch`
+- `numpy`
 
-1. **Generate state, destinations, and pre-training compute** (if not already available).
-2. **Observe the current state**, and convert it into a **feature vector per vehicle**.  
-   These features include:
-   - location  
-   - relative location to other agents  
-   - distance to goal  
-   - collision amount  
-   - current speed  
-   - proximity to road  
-   - current turning angle (or discrete direction initially)  
-   - and more features added gradually depending on training phase
-3. The **Policy Network (PN)** computes an action for each vehicle from the features, outputting changes in speed and turning (with more actions added as training progresses).
-4. Based on the reward function **f(sₜ, aₜ, sₜ₊₁)**, the reward is determined from the current state, next state, and chosen action.
-5. The trajectory **(aₜ, sₜ, rₜ, sₜ₊₁)** is logged.  
-   To save memory, only **aₜ and rₜ** and the initial state may be stored, since sₜ₊₁ can be reconstructed.
-6. The **return** is calculated using the user-defined γ (gamma).
-7. The **Value Network (VN)** predicts the return, giving an MSE-based value loss.
-8. **Advantage** is computed as:  
-   `advantage = return − VN_pred`.
-9. The **clipped surrogate objective** then computes the expectation of the minimum between the clipped and unclipped terms (dependent on ε, advantage, and the ratio of old to new policies).
-10. Combined losses are calculated using coefficients **c₁** and **c₂**, plus **entropy bonus** to encourage exploration.
-11. **Backpropagation** updates the networks.
-12. The episode steps forward one unit in time.
-13. This repeats for hundreds of episodes until the first curriculum phase meets an acceptable standard.
-14. Training continues through the phases until the final one is complete.
-15. A **final evaluation** determines whether the result is strong enough.
+## 1) Download / Clone
 
----
+### Option A: Clone with Git
 
-## **Project Limitations & Purpose**
+```powershell
+git clone <your-repo-url>
+cd TCS
+```
 
-Because the available hardware may not have the computational strength required to reliably find a good minimum for both VN and PN losses, the agent may not fully converge. If the agent fails to understand the environment (i.e., does not converge to a “good” solution), we cannot definitively conclude whether this architecture can achieve intelligent behaviour under ideal training conditions.
+### Option B: Download ZIP
 
-The broader aim of this project is therefore to assess **whether a system like this—autonomous vehicles coordinated by a central controller—can outperform human-like or decentralised approaches**, and whether **this particular architecture** is:
+1. Download the repository ZIP from your Git host.
+2. Extract it.
+3. Open a terminal in the extracted `TCS` folder.
 
-- viable,
-- efficient,
-- scalable,
-- or requiring improvement or replacement.
+## 2) Install Dependencies
 
-Ultimately, the result will show **how far PPO-based centralised control can go** within the constraints of this project, and where future investigation is needed.
+### Windows PowerShell (recommended)
 
----
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install pygame-ce torch numpy
+```
+
+If you already have a compatible Python environment, you can skip virtual environment creation.
+
+## 3) Run the Application
+
+From the project root:
+
+```powershell
+python src\gui\gui_main.py
+```
+
+OR
+
+Run out of src/gui_main.py.
+
+Main menu screens:
+- Train
+- Evaluate
+- Demo
+- Replays
+- Setup
+- Options
+- Controls
+
+## 4) Data Produced at Runtime
+
+The app writes runtime files under `data/`, including:
+- `data/metrics/tcs.db` (SQLite run/episode/metric logs)
+- `data/models/` (network checkpoints and metadata)
+- `data/replays/` (episode replay slot payloads)
+- `data/screenshots/` (manual screenshots)
+- `data/logs/` (config snapshots and exports)
+
+## 5) How to Look Up Commit Versions
+
+### Show recent commit history
+
+```powershell
+git log --oneline --decorate --graph -n 30
+```
+
+### Find a specific version by message text
+
+```powershell
+git log --oneline --grep "VERSION 3.5"
+git log --oneline --grep "VERSION 3.4"
+git log --oneline --grep "VERSION 2.3"
+```
+
+### View full commit details
+
+```powershell
+git show <commit-hash>
+```
+
+### View commit files changed summary
+
+```powershell
+git show --stat <commit-hash>
+```
+
+## 6) Run an Older Commit Version (without changing history)
+
+1. Save or commit your current work first.
+2. Switch to the commit in detached HEAD mode:
+
+```powershell
+git switch --detach <commit-hash>
+```
+
+3. Run that version:
+
+```powershell
+python src\gui\gui_main.py
+```
+
+4. Return to your normal branch when done:
+
+```powershell
+git switch main
+```
+
+If your main branch has a different name, use:
+
+```powershell
+git branch
+```
+
+and switch to the correct branch.
+
+## 7) Useful Git Checks
+
+Current branch:
+
+```powershell
+git branch --show-current
+```
+
+Current commit:
+
+```powershell
+git rev-parse --short HEAD
+```
+
+Working tree status:
+
+```powershell
+git status
+```
+
+## 8) High-Level Code Layout
+
+- `src/gui/`
+  - `gui_main.py`: application entrypoint and top-level state routing
+  - `setup_screen.py`: setup and map preview controls
+  - `train_screen.py`: training setup and during-training runtime
+  - `evaluation_screen.py`: evaluation runs with loaded network
+  - `baseline_demo_screen.py`: non-training demonstration runs
+  - `replay_screen.py`: network and episode replay browser
+  - `options_screen.py`: general and advanced configuration
+  - `controls_screen.py`: per-screen controls reference
+  - `ui_offsets.py`: layout offsets and sizing controls
+
+- `src/utils/`
+  - `run_init.py`: runtime bootstrap, config, database lifecycle
+  - `ppo_controller.py`: PPO model, action selection, GAE, update
+  - `train_backend_helpers.py`: training-step support helpers
+  - `controller_prep.py`: observation and controller prep support
+  - `map_generation.py`: procedural map generation
+  - `network_slots.py`: fixed network slot storage helpers
+  - `replay.py`: episode replay slot persistence helpers
+  - `train_types.py`: training datatypes
+  - `hold_repeat.py`: hold-to-repeat +/- input behaviour
+
+## 9) Notes
+
+- This project is currently tuned for local desktop use.
+- If you are testing historical versions, behaviour and available screens may differ by commit.

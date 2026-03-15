@@ -16,8 +16,9 @@ import pygame
 from src.utils.controller_prep import prepare_vn_pn
 from src.utils.hold_repeat import HoldRepeatController
 from src.utils.map_generation import PreviewVehicle, clamp_phase, generate_phase_map, map_level_count
+from src.utils.network_slots import first_empty_slot, load_slots, mark_slot_saved, save_slots, slot_checkpoint_path
 from src.utils.ppo_controller import PPOConfig, PPOController, PPOUpdateStats
-from src.utils.replay import save_episode_replay
+from src.utils.replay import save_episode_replay_to_slots
 from src.utils.run_init import create_episode_record, insert_metric_record, reseed_all, write_rolling_config
 from src.utils.train_backend_helpers import (
     build_observation_batch,
@@ -188,6 +189,7 @@ class TrainScreen:
         self._arrow_speed_interval_ms = 80
         self.last_episode_failed: Optional[bool] = None
         self.last_episode_success: float = 0.0
+        self.loaded_network_name: str = "Current policy"
         self.network_save_path = self._project_root() / "data" / "models" / "current_network.pt"
         self.network_meta_path = self._project_root() / "data" / "models" / "current_network_meta.json"
         self.screenshot_dir = self._project_root() / "data" / "screenshots"
@@ -195,6 +197,7 @@ class TrainScreen:
         self._pending_replay_save = False
         self._episode_replay_steps: List[Dict[str, Any]] = []
         self._last_replay_path: Optional[Path] = None
+        self._last_replay_save_message: str = ""
         self._phase_hold = HoldRepeatController()
         self._level_hold = HoldRepeatController()
         self._episode_rollouts: Dict[int, VehicleRollout] = {}
@@ -1143,16 +1146,36 @@ class TrainScreen:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "metrics_final": {key: float(value) for key, value in state.metrics.items()},
             "frames": self._episode_replay_steps,
+            # Persist a compact road-grid so Replay can render the same map layout
+            # style used during training playback.
+            "map_grid": [
+                [
+                    1 if (x_pos, y_pos) in self.preview_map.roads else 0
+                    for x_pos in range(int(self.preview_map.width))
+                ]
+                for y_pos in range(int(self.preview_map.height))
+            ],
+            "map_node_types": [
+                [
+                    str(self.preview_map.node_types.get((x_pos, y_pos), ""))
+                    for x_pos in range(int(self.preview_map.width))
+                ]
+                for y_pos in range(int(self.preview_map.height))
+            ],
         }
-        path = save_episode_replay(
+        path, message = save_episode_replay_to_slots(
             base_dir=self._project_root(),
-            replay_payload=payload,
-            run_id=self.run_ctx.run_id,
-            phase=self.phase,
-            level_index=self.level_index,
-            episode_index=state.episode_index,
+            replay_data=payload,
+            replay_name=f"P{int(self.phase)} L{int(self.level_index) + 1} E{int(state.episode_index)}",
+            seed=int(state.seed),
+            network_name=str(self.loaded_network_name),
         )
         self._pending_replay_save = False
+        if path is None:
+            self._last_replay_save_message = str(message)
+            self._last_replay_path = None
+            return None
+        self._last_replay_save_message = str(message)
         self._last_replay_path = path
         return path
 
@@ -1255,6 +1278,8 @@ class TrainScreen:
         vehicle_count = max(1, len(state.vehicles))
         arrivals = float(sum(1 for vehicle in state.vehicles if self._vehicle_has_arrived(vehicle)))
         collisions = float(state.metrics.get("collisions", 0.0))
+        # Episode-level pass/fail is derived from aggregate success + collision
+        # rates so curriculum logic uses one consistent completion signal.
         success_rate = arrivals / float(vehicle_count)
         collision_rate = collisions / float(max(1, vehicle_count * max(1, state.step_count)))
         state.metrics["arrivals"] = float(arrivals)
@@ -1266,6 +1291,8 @@ class TrainScreen:
             and collision_rate <= float(self.collision_threshold)
         )
 
+        # PPO update is executed once per completed episode using the rollout
+        # buffers recorded during `_run_training_step`.
         ppo_stats = self._run_ppo_update()
         state.metrics["loss"] = float(ppo_stats.loss)
         state.metrics["entropy"] = float(ppo_stats.entropy)
@@ -1292,6 +1319,8 @@ class TrainScreen:
         else:
             self.level_passes = max(0, self.level_passes - 1)
 
+        # Persist the finished episode metrics so exports/evaluation views can
+        # aggregate TRAIN outcomes without replaying every episode.
         if self.run_ctx is not None and self.run_ctx.run_id is not None and self.active_episode_id is not None:
             try:
                 for key, value in state.metrics.items():
@@ -1342,6 +1371,8 @@ class TrainScreen:
         )
         if replay_path is not None:
             base_status = f"{base_status} | replay={replay_path.name}"
+        elif self._last_replay_save_message:
+            base_status = f"{base_status} | {self._last_replay_save_message}"
         self.status_message = base_status
 
         if self.auto_continue_training and self.training_view and not self.completed_curriculum:
@@ -1490,6 +1521,8 @@ class TrainScreen:
         now_t = time.perf_counter()
         self._episode_start_t = now_t
         self._last_sim_step_t = now_t
+        # Runtime clocks/accumulators are reset so speed controls do not leak
+        # timing state from the previous episode.
         self._runtime_prev_t = now_t
         self._sim_accumulator_s = 0.0
         self._next_auto_start_ms = 0
@@ -1499,6 +1532,8 @@ class TrainScreen:
         self.active_episode_id = None
         if self.run_ctx is not None and self.run_ctx.run_id is not None:
             try:
+                # Episode rows are created up front so per-step metrics can
+                # always reference a stable episode identifier.
                 episode_id, _ = create_episode_record(
                     self.run_ctx.db_path,
                     run_id=int(self.run_ctx.run_id),
@@ -1559,7 +1594,7 @@ class TrainScreen:
     def _save_network_snapshot(self) -> None:
         """
         Use:
-        Save rolling PPO network snapshot with lightweight metadata.
+        Save PPO network into the first free named slot (max 5).
 
         Inputs:
         - None.
@@ -1573,6 +1608,13 @@ class TrainScreen:
             self.status_message = "Unable to save: PPO not initialised."
             return
 
+        base_dir = self._project_root()
+        slots = load_slots(base_dir)
+        slot_id = first_empty_slot(slots)
+        if slot_id is None:
+            self.status_message = "No free network slots. Open Replays > Networks to manage slots."
+            return
+
         payload: Dict[str, Any] = {
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "seed": int(self.seed),
@@ -1580,50 +1622,58 @@ class TrainScreen:
             "level_index": int(self.level_index),
             "road_density": float(self.road_density),
             "structure_density": float(self.structure_density),
+            "slot_id": int(slot_id),
         }
         try:
-            self.network_save_path.parent.mkdir(parents=True, exist_ok=True)
-            self.ppo.save(self.network_save_path, metadata=payload)
-            self.network_meta_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            self.status_message = f"Network saved -> {self.network_save_path.name}"
+            checkpoint_path = slot_checkpoint_path(base_dir, slot_id)
+            self.ppo.save(checkpoint_path, metadata=payload)
+            mark_slot_saved(
+                slots,
+                slot_id,
+                seed=int(self.seed),
+                phase=int(self.phase),
+                level_index=int(self.level_index),
+            )
+            save_slots(base_dir, slots)
+            slot_name = next((str(s.get("name", f"Network {slot_id}")) for s in slots if int(s.get("slot_id", 0)) == int(slot_id)), f"Network {slot_id}")
+            self.loaded_network_name = str(slot_name)
+            self.status_message = f"Network saved -> slot {slot_id} ({slot_name})"
         except Exception as exc:
             self.status_message = f"Network save failed: {exc}"
 
-    def _load_network_snapshot(self) -> None:
+    def load_network_from_path(self, checkpoint_path: Path, slot_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Use:
-        Load rolling PPO network snapshot and refresh TRAIN preview state.
+        Load PPO network from a selected checkpoint and refresh TRAIN preview.
 
         Inputs:
-        - None.
+        - checkpoint_path: Source checkpoint path selected in Replay browser.
+        - slot_metadata: Optional slot metadata fallback.
 
         Output:
-        None.
+        `True` on successful load, otherwise `False`.
         """
-        if not self.network_save_path.exists():
-            self.status_message = "No network snapshot found."
-            return
+        if not checkpoint_path.exists():
+            self.status_message = "Selected network file is missing."
+            return False
 
         if self.ppo is None:
             self._init_backend_bridge()
         if self.ppo is None:
             self.status_message = "Unable to load: PPO not initialised."
-            return
+            return False
 
         payload: Dict[str, Any] = {}
         try:
-            metadata = self.ppo.load(self.network_save_path)
+            metadata = self.ppo.load(checkpoint_path)
             if isinstance(metadata, dict):
                 payload = dict(metadata)
         except Exception as exc:
             self.status_message = f"Network load failed: {exc}"
-            return
+            return False
 
-        if not payload and self.network_meta_path.exists():
-            try:
-                payload = json.loads(self.network_meta_path.read_text(encoding="utf-8"))
-            except Exception:
-                payload = {}
+        if not payload and isinstance(slot_metadata, dict):
+            payload = dict(slot_metadata)
 
         self.seed = int(payload.get("seed", self.seed))
         self.phase = clamp_phase(int(payload.get("phase", self.phase)))
@@ -1631,6 +1681,8 @@ class TrainScreen:
         self.level_index = max(0, min(int(payload.get("level_index", self.level_index)), max_level_index))
         self.road_density = float(payload.get("road_density", self.road_density))
         self.structure_density = float(payload.get("structure_density", self.structure_density))
+        if isinstance(slot_metadata, dict):
+            self.loaded_network_name = str(slot_metadata.get("name", self.loaded_network_name))
 
         if self.run_ctx is not None:
             self.run_ctx.seed = int(self.seed)
@@ -1642,7 +1694,15 @@ class TrainScreen:
             scenario_cfg["preview_structure_density"] = float(self.structure_density)
 
         self.reset_environment(initial=False)
-        self.status_message = "Network loaded. Preview refreshed."
+        self.status_message = f"Network loaded -> {checkpoint_path.name}"
+        return True
+
+    def _load_network_snapshot(self) -> None:
+        """
+        Use:
+        Backward-compatible rolling-load helper.
+        """
+        _ = self.load_network_from_path(self.network_save_path, None)
 
     def _apply_speed_delta(self, direction: int, step: float = 0.01) -> None:
         """
@@ -1755,6 +1815,8 @@ class TrainScreen:
         if steps_budget > self._max_steps_per_frame:
             steps_budget = self._max_steps_per_frame
 
+        # Execute a bounded number of logical simulation steps this frame to
+        # avoid starving rendering/event handling at high speed multipliers.
         for _ in range(steps_budget):
             self._run_training_step()
             self._sim_accumulator_s = max(0.0, self._sim_accumulator_s - self._sim_step_interval_s)
@@ -1854,6 +1916,8 @@ class TrainScreen:
         transition_rows: List[tuple[int, List[float], int, float, float]] = []
         moved_count = 0
         base_speed, _, _ = self._motion_profile()
+        # Phase-dependent collision weighting is combined with the current
+        # options profile so users can tune strictness by phase.
         collision_penalty_weight = float(reward_weights.get("collision_penalty", 1.0)) * (
             float(collision_loss_multiplier(self.phase)) / 10.0
         )
@@ -1954,6 +2018,8 @@ class TrainScreen:
             else:
                 remaining_after = float(manhattan_distance(current_after, destination))
 
+            # Reward is primarily progress-based, with penalties for idling and
+            # a strong collision term applied later from occupancy checks.
             progress_reward = float(max(0.0, remaining_before - remaining_after)) * float(
                 reward_weights.get("progress_reward", 0.0)
             )
@@ -2232,8 +2298,8 @@ class TrainScreen:
                 self._save_network_snapshot()
                 continue
             if self.load_network_button.collidepoint(event.pos):
-                self._load_network_snapshot()
-                continue
+                self.status_message = "Open Replays > Networks to load a saved network."
+                return "REPLAYS_NETWORK_LOAD"
             if self.reset_button.collidepoint(event.pos):
                 self.reset_environment(initial=False)
                 continue

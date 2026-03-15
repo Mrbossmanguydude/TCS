@@ -16,7 +16,10 @@ if str(ROOT) not in sys.path:
 
 import pygame
 from src.gui.baseline_demo_screen import BaselineDemoScreen
+from src.gui.controls_screen import ControlsScreen
+from src.gui.evaluation_screen import EvaluateScreen
 from src.gui.options_screen import OptionsScreen
+from src.gui.replay_screen import ReplayScreen
 from src.gui.setup_screen import SetupScreen
 from src.gui.train_screen import TrainScreen
 from src.gui.ui_offsets import UI_OFFSETS
@@ -330,11 +333,28 @@ def run_gui() -> None:
         run_ctx=run_ctx,
         ui_offsets=UI_OFFSETS.get("train", {}),
     )
+    evaluate_screen = EvaluateScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets={**UI_OFFSETS.get("train", {}), **UI_OFFSETS.get("evaluate", {})},
+    )
     options_screen = OptionsScreen(
         screen.get_rect(),
         font_path=font_path,
         run_ctx=run_ctx,
         ui_offsets=UI_OFFSETS.get("options", {}),
+    )
+    controls_screen = ControlsScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        ui_offsets=UI_OFFSETS.get("controls", {}),
+    )
+    replay_screen = ReplayScreen(
+        screen.get_rect(),
+        font_path=font_path,
+        run_ctx=run_ctx,
+        ui_offsets=UI_OFFSETS.get("replay", {}),
     )
     state = "MENU"
     active_title = ""
@@ -370,13 +390,17 @@ def run_gui() -> None:
                 setup_screen.run_ctx = run_ctx
                 train_screen.run_ctx = run_ctx
                 demo_screen.run_ctx = run_ctx
+                evaluate_screen.run_ctx = run_ctx
                 options_screen.run_ctx = run_ctx
-                if state in {"TRAIN", "DEMO"} and run_ctx.run_id is None:
+                replay_screen.run_ctx = run_ctx
+                if state in {"TRAIN", "DEMO", "EVALUATE"} and run_ctx.run_id is None:
                     run_ctx = start_train_run(run_ctx)
                     setup_screen.run_ctx = run_ctx
                     train_screen.run_ctx = run_ctx
                     demo_screen.run_ctx = run_ctx
+                    evaluate_screen.run_ctx = run_ctx
                     options_screen.run_ctx = run_ctx
+                    replay_screen.run_ctx = run_ctx
                 if state == "SETUP":
                     # Pull latest shared seed/scenario (including values changed in TRAIN).
                     setup_screen.sync_from_run_context(rebuild=True)
@@ -395,6 +419,15 @@ def run_gui() -> None:
                     options_screen.run_ctx = run_ctx
                     demo_screen.seed = int(run_ctx.seed)
                     demo_screen.reset_environment(initial=True)
+                if state == "EVALUATE":
+                    setup_screen.run_ctx = run_ctx
+                    evaluate_screen.run_ctx = run_ctx
+                    options_screen.run_ctx = run_ctx
+                    evaluate_screen.seed = int(run_ctx.seed)
+                    evaluate_screen.reset_environment(initial=True)
+                if state == "REPLAYS":
+                    replay_screen.run_ctx = run_ctx
+                    replay_screen.enter(view="chooser", load_request_mode=False, return_state="MENU")
                 active_title = state
                 if state == "QUIT":
                     running = False
@@ -408,16 +441,51 @@ def run_gui() -> None:
             next_state = options_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
+        elif state == "CONTROLS":
+            controls_screen.draw(screen)
+            next_state = controls_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
         elif state == "TRAIN":
             train_screen.draw(screen)
             next_state = train_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
+            elif next_state == "REPLAYS_NETWORK_LOAD":
+                replay_screen.run_ctx = run_ctx
+                replay_screen.enter(view="networks", load_request_mode=True, return_state="TRAIN")
+                state = "REPLAYS"
         elif state == "DEMO":
             demo_screen.draw(screen)
             next_state = demo_screen.handle_events(events)
             if next_state == "MENU":
                 state = "MENU"
+        elif state == "EVALUATE":
+            evaluate_screen.draw(screen)
+            next_state = evaluate_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
+            elif next_state == "REPLAYS_NETWORK_LOAD":
+                replay_screen.run_ctx = run_ctx
+                replay_screen.enter(view="networks", load_request_mode=True, return_state="EVALUATE")
+                state = "REPLAYS"
+        elif state == "REPLAYS":
+            replay_screen.draw(screen)
+            next_state = replay_screen.handle_events(events)
+            if next_state == "MENU":
+                state = "MENU"
+            elif next_state == "TRAIN":
+                selected = replay_screen.consume_loaded_network()
+                if selected is not None:
+                    checkpoint_path, slot_meta = selected
+                    train_screen.load_network_from_path(checkpoint_path, slot_meta)
+                state = "TRAIN"
+            elif next_state == "EVALUATE":
+                selected = replay_screen.consume_loaded_network()
+                if selected is not None:
+                    checkpoint_path, slot_meta = selected
+                    evaluate_screen.load_network_from_path(checkpoint_path, slot_meta)
+                state = "EVALUATE"
         else:
             screen.fill(BG)
             back_button.draw(screen)
